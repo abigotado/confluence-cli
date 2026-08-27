@@ -1,0 +1,4 @@
+interface:
+  display_name: "Use Confluence with confluence-cli"
+  short_description: "Read Confluence and guard page writes"
+  default_prompt: "Use $confluence for bounded reads or a confirmed guarded page write."

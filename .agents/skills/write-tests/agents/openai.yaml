@@ -1,0 +1,4 @@
+interface:
+  display_name: "Write confluence-cli Tests"
+  short_description: "Add boundary tests for changed confluence-cli behavior"
+  default_prompt: "Use $write-tests to cover the changed confluence-cli behavior with table-driven tests."

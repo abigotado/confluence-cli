@@ -1,0 +1,136 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Manual dispatch recovers a dropped tag-push webhook without moving or
+  # recreating the immutable tag.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release, e.g. v0.2.2"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# A delayed push event and a manual recovery can overlap. Serialize by the tag
+# both runs intend to publish, and never cancel a release midway through upload.
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  release:
+    name: Release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Git Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Release validation fetches explicitly and publishing receives the
+          # token only on the final GoReleaser step.
+          persist-credentials: false
+          # GoReleaser needs the tags and history for versioning and notes.
+          fetch-depth: 0
+          # A fully qualified tag prevents a same-named branch winning lookup.
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+
+      - name: Assert the checkout is that tag
+        run: |
+          set -euo pipefail
+          if ! git tag --points-at HEAD | grep -Fxq -- "${RELEASE_TAG}"; then
+            here=$(git tag --points-at HEAD | paste -sd, -)
+            echo "::error::HEAD does not carry tag '${RELEASE_TAG}' (tags here: ${here:-none})"
+            exit 1
+          fi
+          echo "releasing ${RELEASE_TAG}"
+
+      - name: Assert the tag is merged into the default branch
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            "refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          if ! git merge-base --is-ancestor HEAD "refs/remotes/origin/${DEFAULT_BRANCH}"; then
+            echo "::error::tagged commit is not merged into default branch '${DEFAULT_BRANCH}'"
+            exit 1
+          fi
+
+      # Manual dispatch may name a legacy tag whose GoReleaser config still
+      # publishes unsigned Darwin binaries or a quarantine-clearing cask. Old
+      # tags do not carry this verifier, so they fail closed here.
+      - name: Assert the tag carries the portable release policy
+        run: ruby .github/scripts/verify-portable-release-policy.rb .goreleaser.yaml
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # A tag is immutable once the module proxy has observed it. Validate the
+      # source before creating or replacing any release assets.
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test -race ./...
+
+      # Exercise the same fallback seam used by GoReleaser and the future
+      # source-building Homebrew Formula. Ordinary builds use their embedded
+      # module version; an explicit source-distribution version wins here.
+      - name: Assert the binary reports the tag
+        run: |
+          set -euo pipefail
+          expected_commit=$(git rev-parse HEAD)
+          commit_epoch=$(git show -s --format=%ct HEAD)
+          expected_commit_time=$(date --utc --date="@${commit_epoch}" '+%Y-%m-%dT%H:%M:%SZ')
+          go build -trimpath \
+            -ldflags "-X github.com/abigotado/confluence-cli/internal/cli.releaseVersion=${RELEASE_TAG} \
+              -X github.com/abigotado/confluence-cli/internal/cli.releaseCommit=${expected_commit} \
+              -X github.com/abigotado/confluence-cli/internal/cli.releaseCommitTime=${expected_commit_time}" \
+            -o "${RUNNER_TEMP}/confluence-cli" ./cmd/confluence-cli
+          response=$("${RUNNER_TEMP}/confluence-cli" version -o json \
+            --fields version,commit,commit_time)
+          got=$(jq -r '.data.version' <<<"${response}")
+          if [ "${got}" != "${RELEASE_TAG}" ]; then
+            echo "::error::binary reports version '${got}', expected '${RELEASE_TAG}'"
+            exit 1
+          fi
+          commit=$(jq -r '.data.commit' <<<"${response}")
+          commit_time=$(jq -r '.data.commit_time' <<<"${response}")
+          if [ "${commit}" != "${expected_commit}" ]; then
+            echo "::error::binary reports commit '${commit}', expected '${expected_commit}'"
+            exit 1
+          fi
+          if [ "${commit_time}" != "${expected_commit_time}" ]; then
+            echo "::error::binary reports commit time '${commit_time}', expected '${expected_commit_time}'"
+            exit 1
+          fi
+          echo "version stamp ok: ${got}"
+
+      # Installed rather than used as a third-party action so the exact tool is
+      # pinned. It needs a newer Go toolchain than the module itself.
+      - name: Install goreleaser
+        env:
+          GOTOOLCHAIN: auto
+        run: go install github.com/goreleaser/goreleaser/v2@v2.17.1
+
+      - name: goreleaser check
+        run: goreleaser check
+
+      # Publishes only CGO-disabled Linux and Windows archives. macOS is built
+      # locally from source and is deliberately absent from this release path.
+      - name: goreleaser release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: goreleaser release --clean

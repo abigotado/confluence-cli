@@ -1,0 +1,4 @@
+interface:
+  display_name: "Plan confluence-cli Change"
+  short_description: "Create an evidence-based confluence-cli change plan"
+  default_prompt: "Use $plan to produce a dependency-ordered confluence-cli implementation plan."
