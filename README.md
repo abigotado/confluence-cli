@@ -144,9 +144,17 @@ exactly one envelope; diagnostics go to stderr.
 ```
 
 Machine callers parse bounded stdout first and accept it only as one complete
-JSON object with an `ok` boolean and integer `v`; a valid envelope is
+top-level JSON object followed by whitespace, with boolean `ok` and a JSON
+integer `v` whose value is exactly `1`. On success, `data` must be present and
+non-null while `error` and `hint` must be absent. On failure, `data` must be
+absent while a present, non-null `error` object must contain string `code` and
+`message`, and `hint` must be a present string. Forbidden members invalidate an
+envelope even when null. Optional `meta` and unknown additive fields are
+tolerated; malformed, unsupported-version, wrongly typed, missing, or
+conflicting known members make stdout invalid. A valid v1 envelope is
 authoritative and stderr is ignored. Only a confirmed page create/update with
-invalid stdout may inspect bounded stderr for the corresponding complete,
+invalid stdout may inspect at most the first 4096 bytes of stderr for the
+corresponding complete,
 newline-terminated `error: WRITE_APPLIED_LOCAL_FAILURE: pages.create applied,
 but local finalization failed` or `pages.update` line documented in the
 machine contract. That exact line means the write is known applied and must not

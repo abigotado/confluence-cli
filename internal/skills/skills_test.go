@@ -87,7 +87,7 @@ func TestPortableSkillOrdersEmergencyWriteRecovery(t *testing.T) {
 	skill := strings.Join(strings.Fields(string(payload["SKILL.md"])), " ")
 	ordered := []string{
 		"Parse bounded stdout first.",
-		"When stdout is valid, it is authoritative.",
+		"When a v1 stdout envelope is valid, it is authoritative.",
 		"Only when stdout is invalid **and** the invocation was a confirmed",
 		"That exact emergency marker means the page write is known to have applied",
 		"Any other stderr remains diagnostic.",
@@ -105,9 +105,8 @@ func TestPortableSkillOrdersEmergencyWriteRecovery(t *testing.T) {
 	}
 
 	for _, rule := range []string{
-		"exactly one complete JSON object",
+		"exactly one complete top-level JSON object",
 		"Empty output, malformed JSON, premature EOF, multiple JSON",
-		"with an `ok` boolean and integer `v`",
 		"Ignore stderr entirely",
 		"a valid envelope whose `error.code` is `WRITE_OUTCOME_UNKNOWN` remains unknown",
 		"using both `--confirm-intent` and `--yes` without `--dry-run`",
@@ -123,6 +122,90 @@ func TestPortableSkillOrdersEmergencyWriteRecovery(t *testing.T) {
 		if !strings.Contains(skill, rule) {
 			t.Errorf("portable skill is missing fail-closed parser rule %q", rule)
 		}
+	}
+}
+
+func TestPortableSkillDefinesStrictDiscriminatedV1Envelope(t *testing.T) {
+	payload, err := payload(ProviderClaude)
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	skill := strings.Join(strings.Fields(string(payload["SKILL.md"])), " ")
+	orderedGrammar := []string{
+		"exactly one complete top-level JSON object, followed only by whitespace, with a boolean `ok` and a JSON integer `v` whose value is exactly `1`.",
+		"Reject decimal, exponent, string, null, boolean, and every other version representation.",
+		"`ok: true` requires present, non-null `data`; `error` and `hint` must be absent.",
+		"`ok: false` requires a present, non-null `error` object with string `code` and `message`, plus a present string `hint`; `data` must be absent.",
+		"Treat a forbidden member as invalid even when its value is null.",
+		"Optional `meta` and unknown additive fields are allowed, but never let them repair an invalid known member.",
+		"any missing, wrongly typed, forbidden, or conflicting known member makes stdout invalid.",
+		"When a v1 stdout envelope is valid, it is authoritative.",
+		"Only when stdout is invalid **and** the invocation was a confirmed",
+	}
+	assertPortableSkillPhrasesOrdered(t, skill, orderedGrammar)
+
+	validStart := strings.Index(skill, "Both of these are valid:")
+	invalidStart := strings.Index(skill, "Each of these is invalid")
+	if validStart < 0 || invalidStart <= validStart {
+		t.Fatalf("portable skill fixture sections are missing or out of order: valid=%d invalid=%d", validStart, invalidStart)
+	}
+	validSection := skill[validStart:invalidStart]
+	for _, fixture := range []string{
+		`{"ok":true,"v":1,"data":{},"meta":{"future":true},"future":true}`,
+		`{"ok":false,"v":1,"error":{"code":"PROFILE_REQUIRED","message":"profile is required","future":true},"hint":"pass --profile","future":true}`,
+	} {
+		if !strings.Contains(validSection, fixture) {
+			t.Errorf("portable skill valid section lacks fixture %s", fixture)
+		}
+	}
+
+	guardedWrites := strings.Index(skill, "## Guarded page writes")
+	if guardedWrites <= invalidStart {
+		t.Fatalf("portable skill invalid fixture section has no end: invalid=%d guarded=%d", invalidStart, guardedWrites)
+	}
+	invalidSection := skill[invalidStart:guardedWrites]
+	for _, fixture := range []string{
+		`{"ok":true,"v":2,"data":{}}`,
+		`{"ok":true,"v":1.0,"data":{}}`,
+		`{"ok":"true","v":1,"data":{}}`,
+		`{"ok":true,"v":"1","data":{}}`,
+		`{"ok":true,"v":1}`,
+		`{"ok":true,"v":1,"data":null}`,
+		`{"ok":true,"v":1,"data":{},"error":null}`,
+		`{"ok":true,"v":1,"data":{},"hint":null}`,
+		`{"ok":false,"v":1,"hint":"stop"}`,
+		`{"ok":false,"v":1,"error":null,"hint":"stop"}`,
+		`{"ok":false,"v":1,"error":{"code":1,"message":"failed"},"hint":"stop"}`,
+		`{"ok":false,"v":1,"error":{"code":"FAILED","message":1},"hint":"stop"}`,
+		`{"ok":false,"v":1,"error":{"code":"FAILED","message":"failed"},"hint":1}`,
+		`{"ok":false,"v":1,"error":{"code":"FAILED","message":"failed"},"hint":"stop","data":null}`,
+	} {
+		if !strings.Contains(invalidSection, fixture) {
+			t.Errorf("portable skill invalid section lacks fixture %s", fixture)
+		}
+	}
+	if !strings.Contains(invalidSection, "may reach the stderr fallback only for the confirmed write described in rule 3") {
+		t.Fatal("portable skill does not connect invalid fixtures to only the confirmed-write fallback")
+	}
+	for _, obsolete := range []string{
+		"object with boolean `ok` and integer `v` is the primary result",
+		"with an `ok` boolean and integer `v`",
+	} {
+		if strings.Contains(skill, obsolete) {
+			t.Errorf("portable skill retains obsolete envelope grammar %q", obsolete)
+		}
+	}
+}
+
+func assertPortableSkillPhrasesOrdered(t *testing.T, skill string, phrases []string) {
+	t.Helper()
+	position := 0
+	for _, phrase := range phrases {
+		index := strings.Index(skill[position:], phrase)
+		if index < 0 {
+			t.Fatalf("portable skill lacks ordered phrase %q", phrase)
+		}
+		position += index + len(phrase)
 	}
 }
 

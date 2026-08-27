@@ -64,11 +64,24 @@ Apply these rules in order; never let a later stderr rule override an earlier
 valid stdout result:
 
 1. Parse bounded stdout first. It is valid only when it contains exactly one
-   complete JSON object, followed only by whitespace, with an `ok` boolean and
-   integer `v`. Empty output, malformed JSON, premature EOF, multiple JSON
-   values, or a missing/invalid `ok` or `v` makes stdout invalid.
-2. When stdout is valid, it is authoritative. Ignore stderr entirely, branch on
-   the envelope and exit code, and follow `hint`. In particular, a valid
+   complete top-level JSON object, followed only by whitespace, with a boolean
+   `ok` and a JSON integer `v` whose value is exactly `1`. Reject decimal,
+   exponent, string, null, boolean, and every other version representation.
+   Then validate the v1 branch selected by `ok`:
+
+   - `ok: true` requires present, non-null `data`; `error` and `hint` must be
+     absent.
+   - `ok: false` requires a present, non-null `error` object with string `code`
+     and `message`, plus a present string `hint`; `data` must be absent.
+
+   Treat a forbidden member as invalid even when its value is null. Optional
+   `meta` and unknown additive fields are allowed, but never let them repair an
+   invalid known member. Empty output, malformed JSON, premature EOF, multiple
+   JSON values, an unsupported version, or any missing, wrongly typed,
+   forbidden, or conflicting known member makes stdout invalid.
+2. When a v1 stdout envelope is valid, it is authoritative. Ignore stderr
+   entirely, branch on the envelope and exit code, and follow `hint`. In
+   particular, a valid
    envelope whose `error.code` is `WRITE_OUTCOME_UNKNOWN` remains unknown: never
    retry it, and reconcile with bounded reads.
 3. Only when stdout is invalid **and** the invocation was a confirmed
@@ -87,6 +100,33 @@ valid stdout result:
    automatically and never claim that the write applied. For every other
    command with invalid stdout, report invalid machine output without inferring
    state from stderr.
+
+Use these fixtures to keep parser behavior exact. Both of these are valid:
+
+```json
+{"ok":true,"v":1,"data":{},"meta":{"future":true},"future":true}
+{"ok":false,"v":1,"error":{"code":"PROFILE_REQUIRED","message":"profile is required","future":true},"hint":"pass --profile","future":true}
+```
+
+Each of these is invalid and may reach the stderr fallback only for the
+confirmed write described in rule 3:
+
+```json
+{"ok":true,"v":2,"data":{}}
+{"ok":true,"v":1.0,"data":{}}
+{"ok":"true","v":1,"data":{}}
+{"ok":true,"v":"1","data":{}}
+{"ok":true,"v":1}
+{"ok":true,"v":1,"data":null}
+{"ok":true,"v":1,"data":{},"error":null}
+{"ok":true,"v":1,"data":{},"hint":null}
+{"ok":false,"v":1,"hint":"stop"}
+{"ok":false,"v":1,"error":null,"hint":"stop"}
+{"ok":false,"v":1,"error":{"code":1,"message":"failed"},"hint":"stop"}
+{"ok":false,"v":1,"error":{"code":"FAILED","message":1},"hint":"stop"}
+{"ok":false,"v":1,"error":{"code":"FAILED","message":"failed"},"hint":1}
+{"ok":false,"v":1,"error":{"code":"FAILED","message":"failed"},"hint":"stop","data":null}
+```
 
 ## Guarded page writes
 

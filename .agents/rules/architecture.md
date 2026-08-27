@@ -54,11 +54,19 @@ In JSON mode stdout carries **only** the response envelope. Every log, warning,
 progress line, and prompt goes to stderr. Text, raw, and explicit help output
 are caller-selected exceptions; agents should use the non-TTY JSON default.
 
-Consumers validate bounded stdout before considering stderr: exactly one JSON
-object with an `ok` boolean and integer `v` is authoritative, including
-`WRITE_OUTCOME_UNKNOWN`. Only a confirmed page create/update whose stdout is
-invalid may inspect bounded stderr, and only the corresponding exact, anchored,
-complete `error: WRITE_APPLIED_LOCAL_FAILURE: pages.create applied, but local
+Consumers validate bounded stdout before considering stderr. A v1 result is
+valid only as exactly one complete top-level JSON object followed by whitespace,
+with boolean `ok` and a JSON integer `v` whose value is exactly `1`. Success
+requires present, non-null `data` and forbids `error` and `hint`; failure forbids
+`data` and requires a present, non-null `error` object with string `code` and
+`message`, plus a present string `hint`. A forbidden member is invalid even when
+its value is null. `meta` is optional, and unknown additive fields are tolerated.
+A valid envelope is authoritative, including `WRITE_OUTCOME_UNKNOWN`. Malformed
+or unsupported stdout, including another envelope version or conflicting
+success/failure members, is invalid. Only a confirmed page create/update whose
+stdout is invalid may inspect at most the first 4096 bytes of stderr, and only
+the corresponding exact, anchored, complete newline-terminated
+`error: WRITE_APPLIED_LOCAL_FAILURE: pages.create applied, but local
 finalization failed` or `pages.update` line changes the outcome to known-applied
 and no-retry. Every other stderr value is diagnostic; reconcile a confirmed
 write with bounded reads without retrying it or claiming it applied.

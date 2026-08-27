@@ -209,16 +209,23 @@ func (client *Client) handle(response *http.Response, request request, out any) 
 		return 0, false, errx.Internal("Confluence response exceeds the safety limit")
 	}
 
-	if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
-		if out == nil || len(bytes.TrimSpace(body)) == 0 {
+	if response.StatusCode == http.StatusOK {
+		if out == nil {
 			return 0, false, nil
 		}
+		if len(bytes.TrimSpace(body)) == 0 {
+			return 0, false, invalidReadResponse()
+		}
 		if err := json.Unmarshal(body, out); err != nil {
-			return 0, false, errx.Internal("Confluence returned an invalid JSON response")
+			return 0, false, invalidReadResponse()
 		}
 		return 0, false, nil
 	}
 	return client.translateStatus(response, request)
+}
+
+func invalidReadResponse() error {
+	return errx.Internal("Confluence returned an invalid read response")
 }
 
 func (client *Client) translateStatus(response *http.Response, request request) (time.Duration, bool, error) {

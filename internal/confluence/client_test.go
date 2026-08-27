@@ -20,7 +20,10 @@ import (
 	"github.com/abigotado/confluence-cli/internal/errx"
 )
 
-const testToken = "SENTINEL_CONFLUENCE_TOKEN_DO_NOT_EXPOSE"
+const (
+	testToken            = "SENTINEL_CONFLUENCE_TOKEN_DO_NOT_EXPOSE"
+	testResponseSentinel = "SENTINEL_CONFLUENCE_RESPONSE_DO_NOT_EXPOSE"
+)
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
@@ -60,6 +63,24 @@ func assertCredential(t *testing.T, request *http.Request) {
 	email, token, ok := request.BasicAuth()
 	if !ok || email != "user@example.com" || subtle.ConstantTimeCompare([]byte(token), []byte(testToken)) != 1 {
 		t.Error("request did not carry the expected in-memory Basic credential")
+	}
+}
+
+func assertInternalReadFailure(t *testing.T, err error, calls int) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("read unexpectedly succeeded")
+	}
+	if errx.ExitCode(err) != errx.CodeInternal {
+		t.Fatalf("code=%d want=%d err=%v", errx.ExitCode(err), errx.CodeInternal, err)
+	}
+	if calls != 1 {
+		t.Fatalf("requests=%d want=1", calls)
+	}
+	for _, forbidden := range []string{testResponseSentinel, testToken} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("upstream response data escaped into diagnostics: %v", err)
+		}
 	}
 }
 
@@ -143,6 +164,183 @@ func TestExactRouteMatrixAndCursorReconstruction(t *testing.T) {
 			}
 			if strings.Contains(test.body, "next") && cursor == "" {
 				t.Error("pagination cursor was not extracted")
+			}
+		})
+	}
+}
+
+func TestReadResponsesRequireExact200WithNonBlankDecodableJSON(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "empty 200 is rejected", status: http.StatusOK},
+		{name: "whitespace 200 is rejected", status: http.StatusOK, body: " \t\r\n"},
+		{name: "malformed 200 is rejected", status: http.StatusOK, body: `{"results":["` + testResponseSentinel + `","` + testToken + `"`},
+		{name: "201 is rejected despite valid JSON", status: http.StatusCreated, body: `{"results":[],"sentinel":"` + testResponseSentinel + ` ` + testToken + `"}`},
+		{name: "204 is rejected", status: http.StatusNoContent},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var calls int
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				calls++
+				writer.WriteHeader(test.status)
+				if test.body == "" {
+					return
+				}
+				if _, err := io.WriteString(writer, test.body); err != nil {
+					t.Errorf("write response: %v", err)
+				}
+			}))
+			defer server.Close()
+
+			client := newTestClient(t, routedClient(t, server, nil))
+			_, err := client.ListSpaces(context.Background(), ListOptions{Limit: 1})
+			assertInternalReadFailure(t, err, calls)
+		})
+	}
+}
+
+func TestListAndSearchResponseShapes(t *testing.T) {
+	operations := []struct {
+		name string
+		call func(*Client) (int, error)
+	}{
+		{
+			name: "spaces list",
+			call: func(client *Client) (int, error) {
+				result, err := client.ListSpaces(context.Background(), ListOptions{Limit: 1})
+				return len(result.Results), err
+			},
+		},
+		{
+			name: "pages list",
+			call: func(client *Client) (int, error) {
+				result, err := client.ListPages(context.Background(), PageListOptions{ListOptions: ListOptions{Limit: 1}})
+				return len(result.Results), err
+			},
+		},
+		{
+			name: "CQL search",
+			call: func(client *Client) (int, error) {
+				result, err := client.Search(context.Background(), "type=page", ListOptions{Limit: 1})
+				return len(result.Results), err
+			},
+		},
+	}
+	shapes := []struct {
+		name    string
+		body    string
+		wantErr bool
+	}{
+		{name: "null is rejected", body: "null", wantErr: true},
+		{name: "empty object is rejected", body: `{}`, wantErr: true},
+		{name: "null results are rejected", body: `{"results":null,"sentinel":"` + testResponseSentinel + ` ` + testToken + `"}`, wantErr: true},
+		{name: "wrong results type is rejected", body: `{"results":{"sentinel":"` + testResponseSentinel + ` ` + testToken + `"}}`, wantErr: true},
+		{name: "empty results array is accepted", body: `{"results":[]}`},
+	}
+
+	for _, operation := range operations {
+		t.Run(operation.name, func(t *testing.T) {
+			for _, shape := range shapes {
+				t.Run(shape.name, func(t *testing.T) {
+					var calls int
+					server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+						calls++
+						if _, err := io.WriteString(writer, shape.body); err != nil {
+							t.Errorf("write response: %v", err)
+						}
+					}))
+					defer server.Close()
+
+					client := newTestClient(t, routedClient(t, server, nil))
+					count, err := operation.call(client)
+					if shape.wantErr {
+						assertInternalReadFailure(t, err, calls)
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if calls != 1 || count != 0 {
+						t.Fatalf("requests=%d results=%d, want requests=1 results=0", calls, count)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDetailResponseShapesRequireExactRequestedID(t *testing.T) {
+	operations := []struct {
+		name string
+		id   string
+		call func(*Client, string) (string, error)
+	}{
+		{
+			name: "space get",
+			id:   "42",
+			call: func(client *Client, id string) (string, error) {
+				result, err := client.GetSpace(context.Background(), id)
+				return result.ID, err
+			},
+		},
+		{
+			name: "page get",
+			id:   "7",
+			call: func(client *Client, id string) (string, error) {
+				result, err := client.GetPage(context.Background(), id, "none")
+				return result.ID, err
+			},
+		},
+	}
+	shapes := []struct {
+		name    string
+		body    func(string) string
+		wantErr bool
+	}{
+		{name: "null is rejected", body: func(string) string { return "null" }, wantErr: true},
+		{name: "empty object is rejected", body: func(string) string { return `{}` }, wantErr: true},
+		{name: "missing ID is rejected", body: func(string) string {
+			return `{"title":"` + testResponseSentinel + ` ` + testToken + `"}`
+		}, wantErr: true},
+		{name: "mismatched ID is rejected", body: func(id string) string {
+			return `{"id":"` + id + `0","title":"` + testResponseSentinel + ` ` + testToken + `"}`
+		}, wantErr: true},
+		{name: "nonnumeric ID is rejected", body: func(string) string {
+			return `{"id":"not-numeric","title":"` + testResponseSentinel + ` ` + testToken + `"}`
+		}, wantErr: true},
+		{name: "exact requested ID is accepted", body: func(id string) string { return `{"id":"` + id + `"}` }},
+	}
+
+	for _, operation := range operations {
+		t.Run(operation.name, func(t *testing.T) {
+			for _, shape := range shapes {
+				t.Run(shape.name, func(t *testing.T) {
+					var calls int
+					server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+						calls++
+						if _, err := io.WriteString(writer, shape.body(operation.id)); err != nil {
+							t.Errorf("write response: %v", err)
+						}
+					}))
+					defer server.Close()
+
+					client := newTestClient(t, routedClient(t, server, nil))
+					gotID, err := operation.call(client, operation.id)
+					if shape.wantErr {
+						assertInternalReadFailure(t, err, calls)
+						return
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+					if calls != 1 || gotID != operation.id {
+						t.Fatalf("requests=%d ID=%q, want requests=1 ID=%q", calls, gotID, operation.id)
+					}
+				})
 			}
 		})
 	}
@@ -329,6 +527,57 @@ func TestVerifyRequiredAccessUsesAllThreeMinimalScopeOperations(t *testing.T) {
 	want := []string{"/ex/confluence/cloud-id" + spacesPath, "/ex/confluence/cloud-id" + pagesPath, "/ex/confluence/cloud-id" + searchPath}
 	if strings.Join(paths, ",") != strings.Join(want, ",") {
 		t.Fatalf("verification paths = %v, want %v", paths, want)
+	}
+}
+
+func TestVerifyRequiredAccessStopsAtEachFailedScopeProbe(t *testing.T) {
+	probes := []struct {
+		path  string
+		scope string
+	}{
+		{path: "/ex/confluence/cloud-id" + spacesPath, scope: "read:space:confluence"},
+		{path: "/ex/confluence/cloud-id" + pagesPath, scope: "read:page:confluence"},
+		{path: "/ex/confluence/cloud-id" + searchPath, scope: "search:confluence"},
+	}
+	for failedProbe := range probes {
+		t.Run(probes[failedProbe].scope+" failure stops verification", func(t *testing.T) {
+			var paths []string
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				paths = append(paths, request.URL.Path)
+				body := `{"results":[]}`
+				if len(paths)-1 == failedProbe {
+					body = `{"results":null,"sentinel":"` + testResponseSentinel + ` ` + testToken + `"}`
+				}
+				if _, err := io.WriteString(writer, body); err != nil {
+					t.Errorf("write response: %v", err)
+				}
+			}))
+			defer server.Close()
+
+			client := newTestClient(t, routedClient(t, server, nil))
+			err := client.VerifyRequiredAccess(context.Background())
+			if err == nil {
+				t.Fatal("access verification unexpectedly succeeded")
+			}
+			if errx.ExitCode(err) != errx.CodeInternal {
+				t.Fatalf("code=%d want=%d err=%v", errx.ExitCode(err), errx.CodeInternal, err)
+			}
+			if !strings.Contains(err.Error(), "verify "+probes[failedProbe].scope) {
+				t.Fatalf("error=%q does not identify failed scope %q", err, probes[failedProbe].scope)
+			}
+			for _, forbidden := range []string{testResponseSentinel, testToken} {
+				if strings.Contains(err.Error(), forbidden) {
+					t.Fatalf("upstream response data escaped into diagnostics: %v", err)
+				}
+			}
+			wantPaths := make([]string, failedProbe+1)
+			for index := range wantPaths {
+				wantPaths[index] = probes[index].path
+			}
+			if strings.Join(paths, ",") != strings.Join(wantPaths, ",") {
+				t.Fatalf("verification paths=%v want=%v", paths, wantPaths)
+			}
+		})
 	}
 }
 

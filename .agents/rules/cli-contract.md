@@ -45,15 +45,30 @@ wins and `internal/errx` is the thing that gets fixed.
 Machine consumers capture stdout and stderr separately under fixed byte limits
 and apply this order:
 
-1. Stdout is valid only as exactly one complete JSON object, followed only by
-   whitespace, with an `ok` boolean and integer `v`. Empty output, parse failure,
-   premature EOF, multiple values, or missing/invalid `ok` or `v` is invalid.
-2. A valid stdout envelope is authoritative; stderr is ignored. This includes a
-   valid `WRITE_OUTCOME_UNKNOWN`, which remains unknown and must be reconciled,
-   never retried automatically.
-3. Only a confirmed `pages create` or `pages update` invocation carrying both
-   `--confirm-intent` and `--yes`, without `--dry-run`, may inspect bounded stderr
-   after invalid stdout. Only complete newline-terminated lines are eligible.
+1. Stdout is valid only as exactly one complete top-level JSON object, followed
+   only by whitespace, with a boolean `ok` and a JSON integer `v` whose value is
+   exactly `1`. Decimal, exponent, string, null, boolean, or any other version
+   representation is unsupported. Empty output, parse failure, premature EOF,
+   multiple values, or a missing or wrongly typed required member is invalid.
+   The remaining v1 shape is selected by `ok`:
+
+   - `ok: true` requires present, non-null `data`; `error` and `hint` must be
+     absent.
+   - `ok: false` requires a present, non-null `error` object with string `code`
+     and `message`, plus a present string `hint`; `data` must be absent.
+
+   A forbidden member makes the envelope invalid even when its value is null.
+   Optional `meta` and unknown additive fields are tolerated; they never repair
+   a missing, wrongly typed, forbidden, or conflicting known member.
+2. A valid v1 stdout envelope is authoritative; stderr is ignored. This
+   includes a valid `WRITE_OUTCOME_UNKNOWN`, which remains unknown and must be
+   reconciled, never retried automatically.
+3. Every malformed or unsupported envelope, including `v: 2`, missing data or
+   error state, wrong types, or conflicting success/failure members, makes
+   stdout invalid. Only a confirmed `pages create` or `pages update` invocation
+   carrying both `--confirm-intent` and `--yes`, without `--dry-run`, may inspect
+   at most the first 4096 bytes of stderr after invalid stdout. Only complete
+   newline-terminated lines are eligible.
 4. The sole emergency markers are the corresponding exact, anchored, complete
    lines `error: WRITE_APPLIED_LOCAL_FAILURE: pages.create applied, but local
    finalization failed` and `error: WRITE_APPLIED_LOCAL_FAILURE: pages.update

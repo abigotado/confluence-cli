@@ -45,6 +45,9 @@ func (client *Client) ListSpaces(ctx context.Context, options ListOptions) (Page
 	if err != nil {
 		return PageResult[Spaces]{}, err
 	}
+	if payload.Results == nil {
+		return PageResult[Spaces]{}, invalidReadResponse()
+	}
 	cursor, err := nextCursor(payload.Links, header, spacesPath, client.cred.CloudID)
 	if err != nil {
 		return PageResult[Spaces]{}, err
@@ -59,7 +62,13 @@ func (client *Client) GetSpace(ctx context.Context, id string) (Space, error) {
 	}
 	var result Space
 	_, err := client.get(ctx, request{path: spacesPath + "/" + url.PathEscape(id), operation: "spaces.get"}, &result)
-	return result, err
+	if err != nil {
+		return Space{}, err
+	}
+	if result.ID != id {
+		return Space{}, invalidReadResponse()
+	}
+	return result, nil
 }
 
 // ListPages returns a bounded cursor page of visible pages.
@@ -94,6 +103,9 @@ func (client *Client) ListPages(ctx context.Context, options PageListOptions) (P
 	if err != nil {
 		return PageResult[Pages]{}, err
 	}
+	if payload.Results == nil {
+		return PageResult[Pages]{}, invalidReadResponse()
+	}
 	cursor, err := nextCursor(payload.Links, header, pagesPath, client.cred.CloudID)
 	if err != nil {
 		return PageResult[Pages]{}, err
@@ -117,7 +129,13 @@ func (client *Client) GetPage(ctx context.Context, id, bodyFormat string) (Page,
 	}
 	var result Page
 	_, err := client.get(ctx, request{path: pagesPath + "/" + url.PathEscape(id), query: query, operation: "pages.get"}, &result)
-	return result, err
+	if err != nil {
+		return Page{}, err
+	}
+	if result.ID != id {
+		return Page{}, invalidReadResponse()
+	}
+	return result, nil
 }
 
 // Search performs one bounded CQL content search.
@@ -151,6 +169,9 @@ func (client *Client) Search(ctx context.Context, cql string, options ListOption
 	header, err := client.get(ctx, request{path: searchPath, query: query, operation: "search.cql"}, &payload)
 	if err != nil {
 		return PageResult[SearchResults]{}, err
+	}
+	if payload.Results == nil {
+		return PageResult[SearchResults]{}, invalidReadResponse()
 	}
 	results := make(SearchResults, 0, len(payload.Results))
 	for _, item := range payload.Results {

@@ -27,13 +27,46 @@ process status.
 
 Apply this grammar in order:
 
-1. Parse stdout as exactly one JSON value. A single object with boolean `ok`
-   and integer `v` is the primary result; never replace it with stderr.
+1. A v1 envelope is exactly one complete top-level JSON object followed only by
+   whitespace. It requires boolean `ok` and a JSON integer `v` whose value is
+   exactly `1`. Decimal, exponent, string, null, boolean, and every other
+   version representation is unsupported. If `ok` is `true`, `data` must be
+   present and non-null; `error` and `hint` must be absent, and their presence
+   is invalid even when `null`. If `ok` is `false`, `data` must be absent;
+   `error` must be a present non-null object with string `code` and `message`,
+   and `hint` must be a present string. Forbidden-key presence is invalid even
+   when `null`. `meta` is optional; unknown additive fields are tolerated. They
+   never repair an invalid known member. A valid v1 envelope is the primary
+   result; never replace it with stderr. Any malformed or unsupported envelope
+   makes stdout invalid.
+
+   Valid v1 examples:
+
+   `{"ok":true,"v":1,"data":{},"meta":{"future":true},"future":true}`
+
+   `{"ok":false,"v":1,"error":{"code":"PROFILE_REQUIRED","message":"profile is required","future":true},"hint":"pass --profile","future":true}`
+
+   Invalid examples:
+
+   - `{"ok":true,"v":2,"data":{}}`
+   - `{"ok":true,"v":1.0,"data":{}}`
+   - `{"ok":"true","v":1,"data":{}}`
+   - `{"ok":true,"v":"1","data":{}}`
+   - `{"ok":true,"v":1}`
+   - `{"ok":true,"v":1,"data":null}`
+   - `{"ok":true,"v":1,"data":{},"error":null}`
+   - `{"ok":true,"v":1,"data":{},"hint":null}`
+   - `{"ok":false,"v":1,"hint":"stop"}`
+   - `{"ok":false,"v":1,"error":null,"hint":"stop"}`
+   - `{"ok":false,"v":1,"error":{"code":1,"message":"failed"},"hint":"stop"}`
+   - `{"ok":false,"v":1,"error":{"code":"FAILED","message":1},"hint":"stop"}`
+   - `{"ok":false,"v":1,"error":{"code":"FAILED","message":"failed"},"hint":1}`
+   - `{"ok":false,"v":1,"error":{"code":"FAILED","message":"failed"},"hint":"stop","data":null}`
+
 2. Only for a `confluence-cli pages create` or `confluence-cli pages update`
    invoked with both `--confirm-intent` and `--yes`, without `--dry-run`, whose
-   stdout is empty, fails JSON parsing
-   (including premature EOF), contains multiple JSON values, or lacks either
-   `ok` or `v`, inspect at most the first 4096 bytes of stderr. Do not use
+   stdout is empty, malformed, unsupported, or otherwise fails the complete v1
+   grammar above, inspect at most the first 4096 bytes of stderr. Do not use
    stderr as a contract fallback in any other case.
 3. In that bounded diagnostic, only one of these exact complete,
    newline-terminated lines counts
