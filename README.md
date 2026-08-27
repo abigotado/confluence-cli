@@ -8,9 +8,10 @@ letting them assemble arbitrary Confluence REST requests. It supports named
 profiles, keeps each scoped API token in macOS Keychain, and ships one portable
 Agent Skill for both providers.
 
-Source, tagged releases, and checksums are published at
-[`abigotado/confluence-cli`](https://github.com/abigotado/confluence-cli) and
-its [GitHub Releases](https://github.com/abigotado/confluence-cli/releases).
+Source is published at
+[`abigotado/confluence-cli`](https://github.com/abigotado/confluence-cli).
+After the first stable release, tagged archives and checksums are available from
+[GitHub Releases](https://github.com/abigotado/confluence-cli/releases).
 
 ## Security model
 
@@ -254,7 +255,8 @@ developer's home directory.
 
 ## Install and releases
 
-On macOS, install the supported source-built Formula from the public tap:
+After the first stable release and its Formula land in the public tap, install
+the supported source-built Formula on macOS:
 
 ```bash
 brew install abigotado/tap/confluence-cli
@@ -264,7 +266,7 @@ Homebrew compiles locally with `CGO_ENABLED=1`, selecting the native
 Security.framework Keychain backend. Upgrade to the newest stable Formula with
 `brew update && brew upgrade confluence-cli`.
 
-Tagged releases and checksums are available from
+Stable releases publish tagged archives and checksums on
 [GitHub Releases](https://github.com/abigotado/confluence-cli/releases). Each
 release provides `linux_amd64`, `linux_arm64`, `windows_amd64`, and
 `windows_arm64` archives plus a SHA-256 checksum file. Verify a downloaded
