@@ -22,12 +22,15 @@ builds:
       - CGO_ENABLED=0
     flags:
       - -trimpath
-    # Source distributions cannot rely on VCS metadata being present. Release
-    # archives use the same fallback seam as the Homebrew Formula. An explicit
-    # source-distribution version takes precedence over incidental VCS/module
-    # stamping; ordinary `go install` builds still use their module version.
+    # Release archives must retain exact immutable provenance even though their
+    # extracted source tree has no VCS metadata. An explicit source-distribution
+    # version takes precedence over incidental module stamping; ordinary
+    # `go install` builds still use their embedded module/VCS information.
     ldflags:
-      - -s -w -X github.com/abigotado/confluence-cli/internal/cli.releaseVersion=v{{ .Version }}
+      - -s -w
+      - -X github.com/abigotado/confluence-cli/internal/cli.releaseVersion=v{{ .Version }}
+      - -X github.com/abigotado/confluence-cli/internal/cli.releaseCommit={{ .FullCommit }}
+      - -X github.com/abigotado/confluence-cli/internal/cli.releaseCommitTime={{ .CommitDate }}
     mod_timestamp: "{{ .CommitTimestamp }}"
     goos: [linux, windows]
     goarch: [amd64, arm64]

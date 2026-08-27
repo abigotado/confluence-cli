@@ -46,9 +46,31 @@ else
   errors << "build must disable cgo" unless Array(build["env"]).include?("CGO_ENABLED=0")
   errors << "build must not override the platform matrix with targets" unless Array(build["targets"]).empty?
 
-  version_flag = "-X github.com/abigotado/confluence-cli/internal/cli.releaseVersion=v{{ .Version }}"
-  unless Array(build["ldflags"]).any? { |flags| flags.include?(version_flag) }
-    errors << "build must inject the releaseVersion fallback"
+  release_prefix = "github.com/abigotado/confluence-cli/internal/cli.release"
+  expected_release_ldflags = {
+    "#{release_prefix}Version" => "v{{ .Version }}",
+    "#{release_prefix}Commit" => "{{ .FullCommit }}",
+    "#{release_prefix}CommitTime" => "{{ .CommitDate }}",
+  }
+  ldflags = Array(build["ldflags"])
+  release_assignments = ldflags.flat_map do |flags|
+    flags.scan(/#{Regexp.escape(release_prefix)}[A-Za-z0-9_]*/)
+  end
+
+  (release_assignments.uniq - expected_release_ldflags.keys).sort.each do |assignment|
+    errors << "unexpected internal/cli release assignment #{assignment} is not permitted"
+  end
+  expected_release_ldflags.each do |assignment, value|
+    name = assignment.delete_prefix(release_prefix)
+    count = release_assignments.count(assignment)
+    if count != 1
+      errors << "build must inject exactly one release#{name} assignment"
+      next
+    end
+    exact = "-X #{assignment}=#{value}"
+    unless ldflags.count(exact) == 1
+      errors << "release#{name} assignment must be exactly #{exact}"
+    end
   end
 end
 

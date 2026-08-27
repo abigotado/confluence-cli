@@ -9,8 +9,15 @@ class VerifyPortableReleasePolicyTest < Minitest::Test
   ROOT = File.expand_path("../..", __dir__)
   VERIFIER = File.join(__dir__, "verify-portable-release-policy.rb")
   CONFIG = YAML.safe_load(File.read(File.join(ROOT, ".goreleaser.yaml")), permitted_classes: [], aliases: false)
+  GO_WORKFLOW = File.read(File.join(ROOT, ".github/workflows/go.yaml"))
   RELEASE_WORKFLOW = File.read(File.join(ROOT, ".github/workflows/release.yaml"))
   RELEASE_WORKFLOW_CONFIG = YAML.safe_load(RELEASE_WORKFLOW, permitted_classes: [], aliases: false)
+  RELEASE_PREFIX = "github.com/abigotado/confluence-cli/internal/cli.release"
+  EXPECTED_RELEASE_LDFLAGS = [
+    "-X #{RELEASE_PREFIX}Version=v{{ .Version }}",
+    "-X #{RELEASE_PREFIX}Commit={{ .FullCommit }}",
+    "-X #{RELEASE_PREFIX}CommitTime={{ .CommitDate }}",
+  ].freeze
 
   def verify(config)
     Tempfile.create(["goreleaser", ".yaml"]) do |file|
@@ -36,6 +43,31 @@ class VerifyPortableReleasePolicyTest < Minitest::Test
   def test_release_provenance_uses_the_machine_contract_field
     assert_includes RELEASE_WORKFLOW, ".data.commit_time"
     refute_includes RELEASE_WORKFLOW, ".data.commitTime"
+  end
+
+  def test_direct_release_injects_and_asserts_exact_canonical_provenance
+    expected = {
+      "#{RELEASE_PREFIX}Version" => "${RELEASE_TAG}",
+      "#{RELEASE_PREFIX}Commit" => "${expected_commit}",
+      "#{RELEASE_PREFIX}CommitTime" => "${expected_commit_time}",
+    }
+    expected.each do |assignment, value|
+      assert_equal 1, RELEASE_WORKFLOW.scan("-X #{assignment}=#{value}").length
+    end
+    assert_equal expected.keys.sort, RELEASE_WORKFLOW.scan(/#{Regexp.escape(RELEASE_PREFIX)}[A-Za-z0-9_]*/).uniq.sort
+    assert_includes RELEASE_WORKFLOW, "commit_epoch=$(git show -s --format=%ct HEAD)"
+    assert_includes RELEASE_WORKFLOW, %(date --utc --date="@${commit_epoch}" '+%Y-%m-%dT%H:%M:%SZ')
+    assert_includes RELEASE_WORKFLOW, "--fields version,commit,commit_time"
+    assert_includes RELEASE_WORKFLOW, '[ "${commit}" != "${expected_commit}" ]'
+    assert_includes RELEASE_WORKFLOW, '[ "${commit_time}" != "${expected_commit_time}" ]'
+  end
+
+  def test_linux_snapshot_asserts_exact_canonical_provenance
+    assert_includes GO_WORKFLOW, "commit_epoch=$(git show -s --format=%ct HEAD)"
+    assert_includes GO_WORKFLOW, %(date --utc --date="@${commit_epoch}" '+%Y-%m-%dT%H:%M:%SZ')
+    assert_includes GO_WORKFLOW, "--fields version,commit,commit_time"
+    assert_includes GO_WORKFLOW, '[ "${commit}" != "${expected_commit}" ]'
+    assert_includes GO_WORKFLOW, '[ "${commit_time}" != "${expected_commit_time}" ]'
   end
 
   def test_release_requires_the_tagged_commit_on_the_default_branch
@@ -113,15 +145,49 @@ class VerifyPortableReleasePolicyTest < Minitest::Test
     assert_includes stderr, "unsupported top-level section homebrew_casks is not permitted"
   end
 
-  def test_rejects_a_missing_version_fallback
+  def test_rejects_a_missing_release_provenance_assignment
     config = mutate do |value|
-      value["builds"].first["ldflags"] = ["-s -w"]
+      value["builds"].first["ldflags"].delete(EXPECTED_RELEASE_LDFLAGS[1])
     end
 
     success, stderr = verify(config)
 
     refute success
-    assert_includes stderr, "must inject the releaseVersion fallback"
+    assert_includes stderr, "must inject exactly one releaseCommit assignment"
+  end
+
+  def test_rejects_a_duplicate_release_provenance_assignment
+    config = mutate do |value|
+      value["builds"].first["ldflags"] << EXPECTED_RELEASE_LDFLAGS[0]
+    end
+
+    success, stderr = verify(config)
+
+    refute success
+    assert_includes stderr, "must inject exactly one releaseVersion assignment"
+  end
+
+  def test_rejects_a_conflicting_release_provenance_assignment
+    config = mutate do |value|
+      flags = value["builds"].first["ldflags"]
+      flags[flags.index(EXPECTED_RELEASE_LDFLAGS[2])] = "-X #{RELEASE_PREFIX}CommitTime={{ .Date }}"
+    end
+
+    success, stderr = verify(config)
+
+    refute success
+    assert_includes stderr, "releaseCommitTime assignment must be exactly"
+  end
+
+  def test_rejects_an_unexpected_internal_cli_release_assignment
+    config = mutate do |value|
+      value["builds"].first["ldflags"] << "-s -w -X #{RELEASE_PREFIX}Branch={{ .Branch }}"
+    end
+
+    success, stderr = verify(config)
+
+    refute success
+    assert_includes stderr, "unexpected internal/cli release assignment #{RELEASE_PREFIX}Branch"
   end
 
   def test_rejects_universal_binaries

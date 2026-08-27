@@ -98,6 +98,9 @@ jobs:
           goreleaser check
           ruby .github/scripts/verify-portable-release-policy_test.rb
           ruby .github/scripts/verify-portable-release-policy.rb .goreleaser.yaml
+          expected_commit=$(git rev-parse HEAD)
+          commit_epoch=$(git show -s --format=%ct HEAD)
+          expected_commit_time=$(date --utc --date="@${commit_epoch}" '+%Y-%m-%dT%H:%M:%SZ')
           goreleaser release --snapshot --clean --skip=publish
           version=$(jq -r '.version' dist/metadata.json)
           if [ -z "${version}" ] || [ "${version}" = "null" ]; then
@@ -126,17 +129,21 @@ jobs:
           smoke_dir="${RUNNER_TEMP}/confluence-cli-release-smoke"
           mkdir -p "${smoke_dir}"
           tar -xzf "dist/confluence-cli_${version}_linux_amd64.tar.gz" -C "${smoke_dir}"
-          response=$("${smoke_dir}/confluence-cli" version -o json)
+          response=$("${smoke_dir}/confluence-cli" version -o json \
+            --fields version,commit,commit_time)
           got=$(jq -r '.data.version' <<<"${response}")
           if [ "${got}" != "v${version}" ]; then
             echo "::error::snapshot binary reports '${got}', expected 'v${version}'"
             exit 1
           fi
           commit=$(jq -r '.data.commit' <<<"${response}")
-          expected_commit=$(git rev-parse HEAD)
           commit_time=$(jq -r '.data.commit_time' <<<"${response}")
-          if [ "${commit}" != "${expected_commit}" ] || [ -z "${commit_time}" ]; then
-            echo "::error::snapshot binary does not report its source commit provenance"
+          if [ "${commit}" != "${expected_commit}" ]; then
+            echo "::error::snapshot binary reports commit '${commit}', expected '${expected_commit}'"
+            exit 1
+          fi
+          if [ "${commit_time}" != "${expected_commit_time}" ]; then
+            echo "::error::snapshot binary reports commit time '${commit_time}', expected '${expected_commit_time}'"
             exit 1
           fi
 

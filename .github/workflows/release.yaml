@@ -91,20 +91,29 @@ jobs:
       - name: Assert the binary reports the tag
         run: |
           set -euo pipefail
+          expected_commit=$(git rev-parse HEAD)
+          commit_epoch=$(git show -s --format=%ct HEAD)
+          expected_commit_time=$(date --utc --date="@${commit_epoch}" '+%Y-%m-%dT%H:%M:%SZ')
           go build -trimpath \
-            -ldflags "-X github.com/abigotado/confluence-cli/internal/cli.releaseVersion=${RELEASE_TAG}" \
+            -ldflags "-X github.com/abigotado/confluence-cli/internal/cli.releaseVersion=${RELEASE_TAG} \
+              -X github.com/abigotado/confluence-cli/internal/cli.releaseCommit=${expected_commit} \
+              -X github.com/abigotado/confluence-cli/internal/cli.releaseCommitTime=${expected_commit_time}" \
             -o "${RUNNER_TEMP}/confluence-cli" ./cmd/confluence-cli
-          response=$("${RUNNER_TEMP}/confluence-cli" version -o json)
+          response=$("${RUNNER_TEMP}/confluence-cli" version -o json \
+            --fields version,commit,commit_time)
           got=$(jq -r '.data.version' <<<"${response}")
           if [ "${got}" != "${RELEASE_TAG}" ]; then
             echo "::error::binary reports version '${got}', expected '${RELEASE_TAG}'"
             exit 1
           fi
           commit=$(jq -r '.data.commit' <<<"${response}")
-          expected_commit=$(git rev-parse HEAD)
           commit_time=$(jq -r '.data.commit_time' <<<"${response}")
-          if [ "${commit}" != "${expected_commit}" ] || [ -z "${commit_time}" ]; then
-            echo "::error::binary does not report the tagged commit provenance"
+          if [ "${commit}" != "${expected_commit}" ]; then
+            echo "::error::binary reports commit '${commit}', expected '${expected_commit}'"
+            exit 1
+          fi
+          if [ "${commit_time}" != "${expected_commit_time}" ]; then
+            echo "::error::binary reports commit time '${commit_time}', expected '${expected_commit_time}'"
             exit 1
           fi
           echo "version stamp ok: ${got}"
