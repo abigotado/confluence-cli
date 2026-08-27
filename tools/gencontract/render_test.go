@@ -49,11 +49,13 @@ func TestRenderContainsOrderedInvalidStdoutRecoveryGrammar(t *testing.T) {
 	got := renderMarkdown(errx.Describe())
 	ordered := []string{
 		"1. Parse stdout as exactly one JSON value.",
-		"2. Only for an explicitly confirmed `confluence-cli pages create` or",
+		"2. Only for a `confluence-cli pages create` or `confluence-cli pages update`",
+		"invoked with both `--confirm-intent` and `--yes`, without `--dry-run`",
 		"stdout is empty, fails JSON parsing",
 		"(including premature EOF), contains multiple JSON values, or lacks either",
 		"inspect at most the first 4096 bytes of stderr.",
-		"3. In that bounded diagnostic, only one of these exact complete lines counts",
+		"3. In that bounded diagnostic, only one of these exact complete,",
+		"newline-terminated lines counts",
 		"error: WRITE_APPLIED_LOCAL_FAILURE: pages.create applied, but local finalization failed",
 		"error: WRITE_APPLIED_LOCAL_FAILURE: pages.update applied, but local finalization failed",
 		"Match from the anchored `error: WRITE_APPLIED_LOCAL_FAILURE:` at line start",
@@ -76,6 +78,9 @@ func TestRenderContainsOrderedInvalidStdoutRecoveryGrammar(t *testing.T) {
 	}
 	if !strings.Contains(got, "stderr as a contract fallback in any other case.") {
 		t.Fatal("rendered contract does not limit stderr fallback to confirmed writes")
+	}
+	if strings.Contains(got, "explicitly confirmed") {
+		t.Fatal("rendered contract uses an undefined confirmation shorthand")
 	}
 }
 
