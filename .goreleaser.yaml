@@ -1,0 +1,79 @@
+# Release pipeline for portable Linux and Windows archives. macOS is excluded:
+# the supported macOS distribution is built locally from source so the native
+# Security.framework credential backend is selected without shipping an
+# unsigned downloaded executable. A source-building Homebrew Formula is added
+# separately after each stable tag exists and its source archive can be pinned
+# by SHA-256.
+version: 2
+
+project_name: confluence-cli
+
+before:
+  hooks:
+    # download, not tidy: tidy rewrites go.mod and go.sum mid-release, dirtying
+    # the very tree goreleaser refuses to build dirty.
+    - go mod download
+
+builds:
+  - id: confluence-cli
+    main: ./cmd/confluence-cli
+    binary: confluence-cli
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    # Source distributions cannot rely on VCS metadata being present. Release
+    # archives use the same fallback seam as the Homebrew Formula. An explicit
+    # source-distribution version takes precedence over incidental VCS/module
+    # stamping; ordinary `go install` builds still use their module version.
+    ldflags:
+      - -s -w -X github.com/abigotado/confluence-cli/internal/cli.releaseVersion=v{{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos: [linux, windows]
+    goarch: [amd64, arm64]
+
+archives:
+  - id: confluence-cli
+    ids: [confluence-cli]
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    # LICENSE and README.md are literal on purpose. A literal path that does
+    # not exist fails the release; a glob only logs a warning nobody reads.
+    files:
+      - LICENSE
+      - README.md
+      - docs/*
+
+checksum:
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  # git, not github: no API call, so a local rehearsal produces the same notes
+  # the real release will. Unset sort keeps git-log order, newest first.
+  use: git
+
+release:
+  # Draft while the pipeline is young: the artifact list gets inspected before
+  # it is public. Homebrew does not consume these prebuilt archives.
+  draft: true
+  prerelease: auto
+  # A tag is immutable, so a job that dies mid-upload must be re-runnable.
+  replace_existing_artifacts: true
+  replace_existing_draft: true
+  footer: |
+    ---
+    Verify a download:
+
+    ```
+    shasum -a 256 -c confluence-cli_{{ .Version }}_checksums.txt --ignore-missing
+    ```
+
+    Run `confluence-cli contract` for the envelope version and exit-code table this
+    build obeys, and `confluence-cli version` for the build itself.
