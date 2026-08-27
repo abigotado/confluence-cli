@@ -273,6 +273,177 @@ func TestListAndSearchResponseShapes(t *testing.T) {
 	}
 }
 
+func TestListCollectionItemsRequireBoundedNumericIDs(t *testing.T) {
+	operations := []struct {
+		name string
+		call func(*Client) ([]string, error)
+	}{
+		{
+			name: "spaces list",
+			call: func(client *Client) ([]string, error) {
+				result, err := client.ListSpaces(context.Background(), ListOptions{Limit: 1})
+				ids := make([]string, len(result.Results))
+				for index := range result.Results {
+					ids[index] = result.Results[index].ID
+				}
+				return ids, err
+			},
+		},
+		{
+			name: "pages list",
+			call: func(client *Client) ([]string, error) {
+				result, err := client.ListPages(context.Background(), PageListOptions{ListOptions: ListOptions{Limit: 1}})
+				ids := make([]string, len(result.Results))
+				for index := range result.Results {
+					ids[index] = result.Results[index].ID
+				}
+				return ids, err
+			},
+		},
+	}
+	invalidShapes := []struct {
+		name string
+		body string
+	}{
+		{name: "null item", body: `{"results":[null],"sentinel":"` + testResponseSentinel + ` ` + testToken + `"}`},
+		{name: "empty object item", body: `{"results":[{}],"sentinel":"` + testResponseSentinel + ` ` + testToken + `"}`},
+		{name: "missing ID", body: `{"results":[{"title":"` + testResponseSentinel + ` ` + testToken + `"}]}`},
+		{name: "null ID", body: `{"results":[{"id":null,"title":"` + testResponseSentinel + ` ` + testToken + `"}]}`},
+		{name: "wrong-type ID", body: `{"results":[{"id":{"sentinel":"` + testResponseSentinel + ` ` + testToken + `"}}]}`},
+		{name: "nonnumeric ID", body: `{"results":[{"id":"not-numeric","title":"` + testResponseSentinel + ` ` + testToken + `"}]}`},
+		{name: "oversized ID", body: `{"results":[{"id":"123456789012345678901234567890123","title":"` + testResponseSentinel + ` ` + testToken + `"}]}`},
+	}
+	validShapes := []struct {
+		name    string
+		body    string
+		wantIDs []string
+	}{
+		{name: "empty results", body: `{"results":[]}`, wantIDs: []string{}},
+		{name: "minimal numeric item", body: `{"results":[{"id":"1"}]}`, wantIDs: []string{"1"}},
+	}
+
+	for _, operation := range operations {
+		t.Run(operation.name, func(t *testing.T) {
+			for _, shape := range invalidShapes {
+				t.Run(shape.name+" is rejected", func(t *testing.T) {
+					var calls int
+					server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+						calls++
+						if _, err := io.WriteString(writer, shape.body); err != nil {
+							t.Errorf("write response: %v", err)
+						}
+					}))
+					defer server.Close()
+
+					client := newTestClient(t, routedClient(t, server, nil))
+					_, err := operation.call(client)
+					assertInternalReadFailure(t, err, calls)
+				})
+			}
+			for _, shape := range validShapes {
+				t.Run(shape.name+" is accepted", func(t *testing.T) {
+					var calls int
+					server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+						calls++
+						if _, err := io.WriteString(writer, shape.body); err != nil {
+							t.Errorf("write response: %v", err)
+						}
+					}))
+					defer server.Close()
+
+					client := newTestClient(t, routedClient(t, server, nil))
+					ids, err := operation.call(client)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if calls != 1 || fmt.Sprint(ids) != fmt.Sprint(shape.wantIDs) {
+						t.Fatalf("requests=%d IDs=%v, want requests=1 IDs=%v", calls, ids, shape.wantIDs)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestCQLItemsRequireBoundedNumericContentIDs(t *testing.T) {
+	invalidShapes := []struct {
+		name string
+		body string
+	}{
+		{name: "null item", body: `{"results":[null],"sentinel":"` + testResponseSentinel + ` ` + testToken + `"}`},
+		{name: "empty object item", body: `{"results":[{}],"sentinel":"` + testResponseSentinel + ` ` + testToken + `"}`},
+		{name: "missing content", body: `{"results":[{"title":"` + testResponseSentinel + ` ` + testToken + `"}]}`},
+		{name: "null content", body: `{"results":[{"content":null,"title":"` + testResponseSentinel + ` ` + testToken + `"}]}`},
+		{name: "missing content ID", body: `{"results":[{"content":{"type":"page"},"title":"` + testResponseSentinel + ` ` + testToken + `"}]}`},
+		{name: "null content ID", body: `{"results":[{"content":{"id":null,"type":"page"},"title":"` + testResponseSentinel + ` ` + testToken + `"}]}`},
+		{name: "wrong-type content ID", body: `{"results":[{"content":{"id":{"sentinel":"` + testResponseSentinel + ` ` + testToken + `"},"type":"page"}}]}`},
+		{name: "nonnumeric content ID", body: `{"results":[{"content":{"id":"not-numeric","type":"page"},"title":"` + testResponseSentinel + ` ` + testToken + `"}]}`},
+		{name: "oversized content ID", body: `{"results":[{"content":{"id":"123456789012345678901234567890123","type":"page"},"title":"` + testResponseSentinel + ` ` + testToken + `"}]}`},
+		{name: "user result without content identity", body: `{"results":[{"user":{"accountId":"` + testResponseSentinel + ` ` + testToken + `"}}]}`},
+		{name: "space result without content identity", body: `{"results":[{"space":{"id":"1","name":"` + testResponseSentinel + ` ` + testToken + `"}}]}`},
+	}
+	validShapes := []struct {
+		name     string
+		body     string
+		wantID   string
+		wantType string
+	}{
+		{name: "empty results", body: `{"results":[]}`},
+		{name: "minimal page", body: `{"results":[{"content":{"id":"7","type":"page"}}]}`, wantID: "7", wantType: "page"},
+		{name: "blogpost with descriptive fields", body: `{"results":[{"content":{"id":"8","type":"blogpost","title":"Post"},"excerpt":"match"}]}`, wantID: "8", wantType: "blogpost"},
+		{name: "minimal attachment", body: `{"results":[{"content":{"id":"9","type":"attachment"}}]}`, wantID: "9", wantType: "attachment"},
+		{name: "future content type is not rejected", body: `{"results":[{"content":{"id":"10","type":"future-content"}}]}`, wantID: "10", wantType: "future-content"},
+		{name: "descriptive fields omitted", body: `{"results":[{"content":{"id":"11"}}]}`, wantID: "11"},
+	}
+
+	for _, shape := range invalidShapes {
+		t.Run(shape.name+" is rejected", func(t *testing.T) {
+			var calls int
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				calls++
+				if _, err := io.WriteString(writer, shape.body); err != nil {
+					t.Errorf("write response: %v", err)
+				}
+			}))
+			defer server.Close()
+
+			client := newTestClient(t, routedClient(t, server, nil))
+			_, err := client.Search(context.Background(), "type=page", ListOptions{Limit: 1})
+			assertInternalReadFailure(t, err, calls)
+		})
+	}
+	for _, shape := range validShapes {
+		t.Run(shape.name+" is accepted", func(t *testing.T) {
+			var calls int
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				calls++
+				if _, err := io.WriteString(writer, shape.body); err != nil {
+					t.Errorf("write response: %v", err)
+				}
+			}))
+			defer server.Close()
+
+			client := newTestClient(t, routedClient(t, server, nil))
+			result, err := client.Search(context.Background(), "type=page", ListOptions{Limit: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("requests=%d want=1", calls)
+			}
+			if shape.wantID == "" {
+				if len(result.Results) != 0 {
+					t.Fatalf("results=%#v want empty", result.Results)
+				}
+				return
+			}
+			if len(result.Results) != 1 || result.Results[0].ID != shape.wantID || result.Results[0].Type != shape.wantType {
+				t.Fatalf("results=%#v want ID=%q type=%q", result.Results, shape.wantID, shape.wantType)
+			}
+		})
+	}
+}
+
 func TestDetailResponseShapesRequireExactRequestedID(t *testing.T) {
 	operations := []struct {
 		name string
@@ -532,12 +703,25 @@ func TestVerifyRequiredAccessUsesAllThreeMinimalScopeOperations(t *testing.T) {
 
 func TestVerifyRequiredAccessStopsAtEachFailedScopeProbe(t *testing.T) {
 	probes := []struct {
-		path  string
-		scope string
+		path        string
+		scope       string
+		invalidBody string
 	}{
-		{path: "/ex/confluence/cloud-id" + spacesPath, scope: "read:space:confluence"},
-		{path: "/ex/confluence/cloud-id" + pagesPath, scope: "read:page:confluence"},
-		{path: "/ex/confluence/cloud-id" + searchPath, scope: "search:confluence"},
+		{
+			path:        "/ex/confluence/cloud-id" + spacesPath,
+			scope:       "read:space:confluence",
+			invalidBody: `{"results":[{"id":"not-numeric","name":"` + testResponseSentinel + ` ` + testToken + `"}]}`,
+		},
+		{
+			path:        "/ex/confluence/cloud-id" + pagesPath,
+			scope:       "read:page:confluence",
+			invalidBody: `{"results":[{"id":"not-numeric","title":"` + testResponseSentinel + ` ` + testToken + `"}]}`,
+		},
+		{
+			path:        "/ex/confluence/cloud-id" + searchPath,
+			scope:       "search:confluence",
+			invalidBody: `{"results":[{"content":{"id":"not-numeric","type":"page"},"title":"` + testResponseSentinel + ` ` + testToken + `"}]}`,
+		},
 	}
 	for failedProbe := range probes {
 		t.Run(probes[failedProbe].scope+" failure stops verification", func(t *testing.T) {
@@ -546,7 +730,7 @@ func TestVerifyRequiredAccessStopsAtEachFailedScopeProbe(t *testing.T) {
 				paths = append(paths, request.URL.Path)
 				body := `{"results":[]}`
 				if len(paths)-1 == failedProbe {
-					body = `{"results":null,"sentinel":"` + testResponseSentinel + ` ` + testToken + `"}`
+					body = probes[failedProbe].invalidBody
 				}
 				if _, err := io.WriteString(writer, body); err != nil {
 					t.Errorf("write response: %v", err)

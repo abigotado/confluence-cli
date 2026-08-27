@@ -106,7 +106,7 @@ func TestPortableSkillOrdersEmergencyWriteRecovery(t *testing.T) {
 
 	for _, rule := range []string{
 		"exactly one complete top-level JSON object",
-		"Empty output, malformed JSON, premature EOF, multiple JSON",
+		"Empty output, malformed JSON or `meta`, premature EOF, multiple JSON",
 		"Ignore stderr entirely",
 		"a valid envelope whose `error.code` is `WRITE_OUTCOME_UNKNOWN` remains unknown",
 		"using both `--confirm-intent` and `--yes` without `--dry-run`",
@@ -138,6 +138,9 @@ func TestPortableSkillDefinesStrictDiscriminatedV1Envelope(t *testing.T) {
 		"`ok: false` requires a present, non-null `error` object with string `code` and `message`, plus a present string `hint`; `data` must be absent.",
 		"Treat a forbidden member as invalid even when its value is null.",
 		"Optional `meta` and unknown additive fields are allowed, but never let them repair an invalid known member.",
+		"On either branch, `meta` may be absent. When present it must be a non-null object and may be empty.",
+		"Every present known metadata member must be non-null and have its exact v1 type: `count` is a nonnegative JSON integer written without a fraction or exponent, `truncated` is boolean, and `next_cursor`, `profile`, and `site` are strings.",
+		"Allow unknown additive metadata members, but never let them repair a missing, null, or wrongly typed known member.",
 		"any missing, wrongly typed, forbidden, or conflicting known member makes stdout invalid.",
 		"When a v1 stdout envelope is valid, it is authoritative.",
 		"Only when stdout is invalid **and** the invocation was a confirmed",
@@ -151,8 +154,8 @@ func TestPortableSkillDefinesStrictDiscriminatedV1Envelope(t *testing.T) {
 	}
 	validSection := skill[validStart:invalidStart]
 	for _, fixture := range []string{
-		`{"ok":true,"v":1,"data":{},"meta":{"future":true},"future":true}`,
-		`{"ok":false,"v":1,"error":{"code":"PROFILE_REQUIRED","message":"profile is required","future":true},"hint":"pass --profile","future":true}`,
+		`{"ok":true,"v":1,"data":{},"meta":{},"future":true}`,
+		`{"ok":false,"v":1,"error":{"code":"PROFILE_REQUIRED","message":"profile is required","future":true},"hint":"pass --profile","meta":{"count":0,"truncated":false,"next_cursor":"","profile":"work","site":"https://example.atlassian.net","future":null},"future":true}`,
 	} {
 		if !strings.Contains(validSection, fixture) {
 			t.Errorf("portable skill valid section lacks fixture %s", fixture)
@@ -179,6 +182,21 @@ func TestPortableSkillDefinesStrictDiscriminatedV1Envelope(t *testing.T) {
 		`{"ok":false,"v":1,"error":{"code":"FAILED","message":1},"hint":"stop"}`,
 		`{"ok":false,"v":1,"error":{"code":"FAILED","message":"failed"},"hint":1}`,
 		`{"ok":false,"v":1,"error":{"code":"FAILED","message":"failed"},"hint":"stop","data":null}`,
+		`{"ok":true,"v":1,"data":{},"meta":null}`,
+		`{"ok":true,"v":1,"data":{},"meta":[]}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"count":null}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"count":-1}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"count":1.0}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"count":1e0}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"count":"1"}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"truncated":null}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"truncated":"false"}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"next_cursor":null}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"next_cursor":1}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"profile":null}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"profile":false}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"site":null}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"site":[]}}`,
 	} {
 		if !strings.Contains(invalidSection, fixture) {
 			t.Errorf("portable skill invalid section lacks fixture %s", fixture)

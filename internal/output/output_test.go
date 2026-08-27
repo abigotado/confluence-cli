@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,17 @@ func decodeEnvelope(t *testing.T, out *bytes.Buffer) map[string]any {
 	t.Helper()
 	var env map[string]any
 	if err := json.Unmarshal(out.Bytes(), &env); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, out.String())
+	}
+	return env
+}
+
+func decodeEnvelopeUseNumber(t *testing.T, out *bytes.Buffer) map[string]any {
+	t.Helper()
+	decoder := json.NewDecoder(bytes.NewReader(out.Bytes()))
+	decoder.UseNumber()
+	var env map[string]any
+	if err := decoder.Decode(&env); err != nil {
 		t.Fatalf("invalid JSON: %v\n%s", err, out.String())
 	}
 	return env
@@ -117,6 +129,41 @@ func TestCollectionAndPaginationMetadata(t *testing.T) {
 				t.Errorf("next_cursor = %q, want %q", got, tt.wantCursor)
 			}
 		})
+	}
+}
+
+func TestV1MetadataWireTypesAndFailureOmission(t *testing.T) {
+	w, out, _ := writer(FormatJSON, nil)
+	w.WithContext("work", "https://example.atlassian.net")
+	if err := w.SuccessPage([]record{{key: "123"}}, true, "opaque"); err != nil {
+		t.Fatalf("SuccessPage: %v", err)
+	}
+	env := decodeEnvelopeUseNumber(t, out)
+	meta, ok := env["meta"].(map[string]any)
+	if !ok || meta == nil {
+		t.Fatalf("meta = %#v, want non-null object", env["meta"])
+	}
+	count, ok := meta["count"].(json.Number)
+	if !ok || strings.ContainsAny(count.String(), ".eE") {
+		t.Fatalf("meta.count = %#v, want integral JSON number", meta["count"])
+	}
+	parsedCount, err := strconv.ParseInt(count.String(), 10, 64)
+	if err != nil || parsedCount < 0 {
+		t.Fatalf("meta.count = %q, want non-negative integer: %v", count, err)
+	}
+	if _, ok := meta["truncated"].(bool); !ok {
+		t.Fatalf("meta.truncated = %#v, want boolean", meta["truncated"])
+	}
+	for _, field := range []string{"next_cursor", "profile", "site"} {
+		if value, ok := meta[field].(string); !ok || value == "" {
+			t.Errorf("meta.%s = %#v, want emitted non-null string", field, meta[field])
+		}
+	}
+
+	failure, failureOut, _ := writer(FormatJSON, nil)
+	failure.Failure(errx.Usage("bad"))
+	if _, present := decodeEnvelopeUseNumber(t, failureOut)["meta"]; present {
+		t.Fatal("v1 failure envelope unexpectedly emitted meta")
 	}
 }
 

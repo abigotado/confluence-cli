@@ -54,6 +54,10 @@ func TestRenderContainsStrictV1GrammarBeforeWriteRecovery(t *testing.T) {
 		"If `ok` is `false`, `data` must be absent; `error` must be a present non-null object with string `code` and `message`, and `hint` must be a present string.",
 		"Forbidden-key presence is invalid even when `null`.",
 		"`meta` is optional; unknown additive fields are tolerated. They never repair an invalid known member.",
+		"On either branch, `meta` may be absent; when present it must be a non-null object and may be empty.",
+		"Every present known metadata member must be non-null and have its exact v1 type: `count` is a nonnegative JSON integer written without a fraction or exponent, `truncated` is boolean, and `next_cursor`, `profile`, and `site` are strings.",
+		"Unknown additive metadata members are tolerated, but they never repair a missing, null, or wrongly typed known member.",
+		"A malformed `meta` makes the entire envelope invalid.",
 		"Any malformed or unsupported envelope makes stdout invalid.",
 		"Valid v1 examples:",
 	}
@@ -66,8 +70,8 @@ func TestRenderContainsStrictV1GrammarBeforeWriteRecovery(t *testing.T) {
 	}
 	validSection := got[validStart:invalidStart]
 	for _, fixture := range []string{
-		`{"ok":true,"v":1,"data":{},"meta":{"future":true},"future":true}`,
-		`{"ok":false,"v":1,"error":{"code":"PROFILE_REQUIRED","message":"profile is required","future":true},"hint":"pass --profile","future":true}`,
+		`{"ok":true,"v":1,"data":{},"meta":{},"future":true}`,
+		`{"ok":false,"v":1,"error":{"code":"PROFILE_REQUIRED","message":"profile is required","future":true},"hint":"pass --profile","meta":{"count":0,"truncated":false,"next_cursor":"","profile":"work","site":"https://example.atlassian.net","future":null},"future":true}`,
 	} {
 		if !strings.Contains(validSection, fixture) {
 			t.Errorf("rendered contract valid section lacks fixture %s", fixture)
@@ -94,6 +98,21 @@ func TestRenderContainsStrictV1GrammarBeforeWriteRecovery(t *testing.T) {
 		`{"ok":false,"v":1,"error":{"code":"FAILED","message":1},"hint":"stop"}`,
 		`{"ok":false,"v":1,"error":{"code":"FAILED","message":"failed"},"hint":1}`,
 		`{"ok":false,"v":1,"error":{"code":"FAILED","message":"failed"},"hint":"stop","data":null}`,
+		`{"ok":true,"v":1,"data":{},"meta":null}`,
+		`{"ok":true,"v":1,"data":{},"meta":[]}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"count":null}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"count":-1}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"count":1.0}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"count":1e0}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"count":"1"}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"truncated":null}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"truncated":"false"}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"next_cursor":null}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"next_cursor":1}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"profile":null}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"profile":false}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"site":null}}`,
+		`{"ok":true,"v":1,"data":{},"meta":{"site":[]}}`,
 	} {
 		if !strings.Contains(invalidSection, fixture) {
 			t.Errorf("rendered contract invalid section lacks fixture %s", fixture)

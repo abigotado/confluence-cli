@@ -149,9 +149,13 @@ integer `v` whose value is exactly `1`. On success, `data` must be present and
 non-null while `error` and `hint` must be absent. On failure, `data` must be
 absent while a present, non-null `error` object must contain string `code` and
 `message`, and `hint` must be a present string. Forbidden members invalidate an
-envelope even when null. Optional `meta` and unknown additive fields are
-tolerated; malformed, unsupported-version, wrongly typed, missing, or
-conflicting known members make stdout invalid. A valid v1 envelope is
+envelope even when null. `meta` is optional on either branch; when present it
+must be a non-null object and may be empty. Its known fields are non-null:
+`count` is a nonnegative JSON integer without a fraction or exponent,
+`truncated` is boolean, and `next_cursor`, `profile`, and `site` are strings.
+Unknown additive metadata is tolerated but cannot repair an invalid known
+field. Malformed metadata, unsupported versions, wrong types, missing members,
+or conflicting known members make stdout invalid. A valid v1 envelope is
 authoritative and stderr is ignored. Only a confirmed page create/update with
 invalid stdout may inspect at most the first 4096 bytes of stderr for the
 corresponding complete,

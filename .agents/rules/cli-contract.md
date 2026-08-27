@@ -58,17 +58,23 @@ and apply this order:
      and `message`, plus a present string `hint`; `data` must be absent.
 
    A forbidden member makes the envelope invalid even when its value is null.
-   Optional `meta` and unknown additive fields are tolerated; they never repair
-   a missing, wrongly typed, forbidden, or conflicting known member.
+   On either branch, `meta` may be absent. When present it must be a non-null
+   object and may be empty. Every present known metadata member is non-null and
+   has its exact v1 type: `count` is a nonnegative JSON integer written without
+   a fraction or exponent, `truncated` is boolean, and `next_cursor`, `profile`,
+   and `site` are strings. Unknown additive metadata members are tolerated.
+   They never repair a missing, null, wrongly typed, forbidden, or conflicting
+   known member. Malformed `meta` makes the entire stdout envelope invalid.
 2. A valid v1 stdout envelope is authoritative; stderr is ignored. This
    includes a valid `WRITE_OUTCOME_UNKNOWN`, which remains unknown and must be
    reconciled, never retried automatically.
-3. Every malformed or unsupported envelope, including `v: 2`, missing data or
-   error state, wrong types, or conflicting success/failure members, makes
-   stdout invalid. Only a confirmed `pages create` or `pages update` invocation
-   carrying both `--confirm-intent` and `--yes`, without `--dry-run`, may inspect
-   at most the first 4096 bytes of stderr after invalid stdout. Only complete
-   newline-terminated lines are eligible.
+3. Every malformed or unsupported envelope, including `v: 2`, malformed
+   metadata, missing data or error state, wrong types, or conflicting
+   success/failure members, makes stdout invalid. Only a confirmed invocation
+   of `pages create` or `pages update` carrying both `--confirm-intent` and
+   `--yes`, without `--dry-run`, may inspect at most the first 4096 bytes of
+   stderr after invalid stdout. Only complete newline-terminated lines are
+   eligible.
 4. The sole emergency markers are the corresponding exact, anchored, complete
    lines `error: WRITE_APPLIED_LOCAL_FAILURE: pages.create applied, but local
    finalization failed` and `error: WRITE_APPLIED_LOCAL_FAILURE: pages.update

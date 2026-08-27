@@ -48,6 +48,11 @@ func (client *Client) ListSpaces(ctx context.Context, options ListOptions) (Page
 	if payload.Results == nil {
 		return PageResult[Spaces]{}, invalidReadResponse()
 	}
+	for _, space := range payload.Results {
+		if !boundedNumericID(space.ID) {
+			return PageResult[Spaces]{}, invalidReadResponse()
+		}
+	}
 	cursor, err := nextCursor(payload.Links, header, spacesPath, client.cred.CloudID)
 	if err != nil {
 		return PageResult[Spaces]{}, err
@@ -105,6 +110,11 @@ func (client *Client) ListPages(ctx context.Context, options PageListOptions) (P
 	}
 	if payload.Results == nil {
 		return PageResult[Pages]{}, invalidReadResponse()
+	}
+	for _, page := range payload.Results {
+		if !boundedNumericID(page.ID) {
+			return PageResult[Pages]{}, invalidReadResponse()
+		}
 	}
 	cursor, err := nextCursor(payload.Links, header, pagesPath, client.cred.CloudID)
 	if err != nil {
@@ -175,6 +185,9 @@ func (client *Client) Search(ctx context.Context, cql string, options ListOption
 	}
 	results := make(SearchResults, 0, len(payload.Results))
 	for _, item := range payload.Results {
+		if !boundedNumericID(item.Content.ID) {
+			return PageResult[SearchResults]{}, invalidReadResponse()
+		}
 		title := item.Content.Title
 		if title == "" {
 			title = item.Title
@@ -224,15 +237,25 @@ func validateListOptions(options ListOptions) error {
 }
 
 func validateNumericID(kind, id string) error {
+	if boundedNumericID(id) {
+		return nil
+	}
 	if id == "" || len(id) > atlassian.MaxNumericIDLength {
 		return errx.Usage("%s ID must be a non-empty numeric value", kind)
 	}
+	return errx.Usage("%s ID must be numeric", kind)
+}
+
+func boundedNumericID(id string) bool {
+	if id == "" || len(id) > atlassian.MaxNumericIDLength {
+		return false
+	}
 	for _, character := range id {
 		if character < '0' || character > '9' {
-			return errx.Usage("%s ID must be numeric", kind)
+			return false
 		}
 	}
-	return nil
+	return true
 }
 
 func validateBoundedText(name, value string, limit int) error {
