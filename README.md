@@ -34,7 +34,7 @@ After the first stable release, tagged archives and checksums are available from
 
 ## Build
 
-Go 1.25.0 or newer and the macOS SDK are required:
+Go 1.25.13 or newer and the macOS SDK are required:
 
 ```bash
 git clone https://github.com/abigotado/confluence-cli.git

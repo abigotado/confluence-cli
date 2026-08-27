@@ -15,7 +15,7 @@ discover after the code is written.
 
 ## Setup
 
-Go 1.25.0 or newer — `go.mod` is the source of truth, and CI reads the version
+Go 1.25.13 or newer — `go.mod` is the source of truth, and CI reads the version
 from it.
 
 ```bash
