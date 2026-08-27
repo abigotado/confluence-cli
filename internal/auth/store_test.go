@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/abigotado/confluence-cli/internal/profile"
 )
@@ -71,5 +72,21 @@ func TestValidateCredentialBindingFailsClosed(t *testing.T) {
 		if err := ValidateCredentialBinding(credential, modern); !errors.Is(err, ErrCredentialBindingMismatch) {
 			t.Fatalf("binding error = %v, want ErrCredentialBindingMismatch", err)
 		}
+	}
+}
+
+func TestValidateCredentialBindingRejectsExpiryOnlyMutation(t *testing.T) {
+	modern := profile.Profile{
+		Name: "work", Site: "https://tenant.atlassian.net", Email: "user@example.com", CloudID: "cloud-id",
+		CredentialGeneration: strings.Repeat("A", 43), Capabilities: []profile.Capability{profile.CapabilityRead},
+	}
+	credential := Credential{
+		Token: "token", ProfileIdentity: profile.CredentialIdentity(modern), Generation: modern.CredentialGeneration,
+		Capabilities: append([]profile.Capability(nil), modern.Capabilities...),
+	}
+	expiresAt := time.Date(2035, time.June, 7, 8, 9, 10, 0, time.UTC)
+	modern.ExpiresAt = &expiresAt
+	if err := ValidateCredentialBinding(credential, modern); !errors.Is(err, ErrCredentialBindingMismatch) {
+		t.Fatalf("binding error = %v, want ErrCredentialBindingMismatch", err)
 	}
 }

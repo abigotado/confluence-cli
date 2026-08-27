@@ -38,9 +38,9 @@ logout but fail closed for writes until they log in again.
 
 The write policy stores exact positive numeric space IDs in a separate locked,
 atomic, mode-0600 registry. Its SHA-256 identity binding covers canonical
-non-secret profile name, site, lowercase email, cloud ID, credential generation,
-and capabilities. A token replacement or capability change makes the prior
-allowlist stale.
+non-secret profile name, site, lowercase email, cloud ID, optional expiry,
+credential generation, and capabilities. A token replacement, expiry change,
+or capability change makes the prior allowlist stale.
 
 ```text
 confluence-cli auth allow-spaces show --profile NAME
@@ -65,8 +65,16 @@ page IDs, parent when supplied, expected version, title/body byte counts,
 representation, a local SHA-256 body digest, and `intent_sha256` over every
 write-relevant input including the title, content digest, and current non-secret
 profile identity. The identity binds site, email, cloud ID, credential
-generation, and capabilities without exposing those fields in the receipt. It reports
-`remote_checks: not_performed`, `applied: false`, and `dry_run: true`.
+generation, optional expiry, and capabilities without exposing those fields in
+the receipt. It reports `remote_checks: not_performed`, `applied: false`, and
+`dry_run: true`.
+
+The credential-identity migration that added optional expiry changes existing
+identity hashes. A pre-migration Keychain binding, space allowlist, or dry-run
+intent is not reusable. Recover by logging in again with the exact profile,
+replacing the complete space allowlist, and producing and reviewing a new
+dry-run before any confirmed write. `auth migrate-keychain` changes only
+Keychain access policy and does not refresh these identity hashes.
 
 Dry-run cannot claim that a remote target exists, that the expected version is
 current, or that the account can write. It reads profile metadata only; it never
@@ -83,7 +91,7 @@ Under profile-then-policy locks, the confirmed command:
 1. checks modern `page-write` capability and the generation-bound space;
 2. recomputes the approved intent against the exact locked profile identity;
 3. loads the exact Keychain credential and verifies its full profile-identity,
-   generation, and capability binding;
+   optional-expiry, generation, and capability binding;
 4. reads and verifies the canonical space;
 5. for create with a parent, verifies a current parent in the same space;
 6. for update, verifies a current page in the same space and exact expected
@@ -115,3 +123,9 @@ deciding with the operator whether any further action is safe.
 If the remote success was fully verified but releasing a local lock fails, the
 CLI reports `WRITE_APPLIED_LOCAL_FAILURE` on exit 1: the write is known to have
 applied and must not be repeated.
+
+The same rule applies when stdout fails after remote success was fully verified.
+The attempted success envelope may be absent or truncated on stdout, so it is
+not a reliable recovery channel. Stderr reports
+`WRITE_APPLIED_LOCAL_FAILURE` with explicit do-not-retry guidance. Treat the
+write as applied and reconcile remotely instead of repeating it.

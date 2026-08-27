@@ -9,10 +9,11 @@ permissions granted to its Atlassian account.
   switched, or stored default profile.
 - The profile registry contains non-secret metadata only: name, Confluence site,
   email, Cloud ID, optional expiry, credential generation, and canonical
-  capabilities. Scoped tokens are the only supported credential kind.
+  capabilities. Optional expiry is part of the credential, allowlist, and
+  dry-run-intent identity. Scoped tokens are the only supported credential kind.
 - The token is stored as one versioned generic-password payload per profile in
   macOS Keychain, atomically bound to the full non-secret profile identity,
-  credential generation, and capabilities.
+  including optional expiry, credential generation, and capabilities.
   It never enters the registry, a cache, a log, or the repository. Every
   network path must reject a payload/profile binding mismatch before client construction.
 - Keychain access uses Security.framework `SecItem` APIs directly. Never use
@@ -55,6 +56,12 @@ permissions granted to its Atlassian account.
   print, log, inspect, or persist the header.
 - Only reads retry. Writes use a non-replayable body, are attempted once, and
   use ambiguous-outcome handling rather than automatic retry.
+- An identity-format migration invalidates earlier credential, allowlist, and
+  dry-run hashes. Recovery requires re-login for the exact profile, replacing
+  the complete space allowlist, and generating and reviewing a new dry-run.
+- If remote write success was fully verified but stdout delivery fails, stdout
+  may be empty or truncated. Report `WRITE_APPLIED_LOCAL_FAILURE` and explicit
+  do-not-retry guidance on stderr; never repeat the known-applied write.
 
 ## Review triggers
 

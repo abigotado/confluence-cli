@@ -33,6 +33,23 @@ func writer(format Format, fields []string) (*Writer, *bytes.Buffer, *bytes.Buff
 	return &Writer{Format: format, Fields: fields, Out: out, Err: stderr}, out, stderr
 }
 
+type boundedWriter struct {
+	bytes.Buffer
+	limit int
+	err   error
+	calls int
+}
+
+func (writer *boundedWriter) Write(payload []byte) (int, error) {
+	writer.calls++
+	limit := writer.limit
+	if limit < 0 || limit > len(payload) {
+		limit = len(payload)
+	}
+	_, _ = writer.Buffer.Write(payload[:limit])
+	return limit, writer.err
+}
+
 func decodeEnvelope(t *testing.T, out *bytes.Buffer) map[string]any {
 	t.Helper()
 	var env map[string]any
@@ -161,6 +178,74 @@ func TestValidateChecksProjectionWithoutWriting(t *testing.T) {
 			}
 			if out.Len() != 0 || stderr.Len() != 0 {
 				t.Fatalf("Validate wrote output: stdout=%q stderr=%q", out.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestSuccessStagesEveryFormatIntoOneWrite(t *testing.T) {
+	tests := []struct {
+		name   string
+		format Format
+		data   any
+	}{
+		{name: "json", format: FormatJSON, data: []record{{key: "123"}, {key: "456"}}},
+		{name: "raw", format: FormatRaw, data: map[string]any{"key": "123"}},
+		{name: "text", format: FormatText, data: []record{{key: "123"}, {key: "456"}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			out := &boundedWriter{limit: -1}
+			stderr := &bytes.Buffer{}
+			w := &Writer{Format: test.format, Out: out, Err: stderr}
+			if err := w.Success(test.data); err != nil {
+				t.Fatalf("Success: %v", err)
+			}
+			if out.calls != 1 {
+				t.Fatalf("stdout writes=%d, want 1", out.calls)
+			}
+			if out.Len() == 0 || stderr.Len() != 0 {
+				t.Fatalf("stdout=%q stderr=%q", out.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestFailureAfterSuccessEmissionErrorDoesNotWriteSecondEnvelope(t *testing.T) {
+	tests := []struct {
+		name   string
+		format Format
+		limit  int
+		err    error
+	}{
+		{name: "zero", format: FormatJSON, limit: 0, err: errors.New("closed output")},
+		{name: "partial", format: FormatRaw, limit: 2, err: errors.New("interrupted output")},
+		{name: "short", format: FormatText, limit: 2},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			out := &boundedWriter{limit: test.limit, err: test.err}
+			stderr := &bytes.Buffer{}
+			w := &Writer{Format: test.format, Out: out, Err: stderr}
+			err := w.Success(record{key: "123", summary: "Created"})
+			if err == nil {
+				t.Fatal("Success error=nil, want emission failure")
+			}
+			beforeFailure := out.String()
+			code := w.Failure(errx.WriteAppliedLocalFailure("pages.create").Wrap(err))
+			if code != errx.CodeInternal {
+				t.Fatalf("Failure code=%d, want %d", code, errx.CodeInternal)
+			}
+			if out.calls != 1 {
+				t.Fatalf("stdout writes=%d, want 1", out.calls)
+			}
+			if out.String() != beforeFailure {
+				t.Fatalf("Failure appended stdout: before=%q after=%q", beforeFailure, out.String())
+			}
+			for _, want := range []string{"WRITE_APPLIED_LOCAL_FAILURE", "pages.create applied", "do not retry"} {
+				if !strings.Contains(stderr.String(), want) {
+					t.Errorf("stderr missing %q: %q", want, stderr.String())
+				}
 			}
 		})
 	}

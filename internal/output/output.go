@@ -3,6 +3,7 @@
 package output
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -114,6 +115,21 @@ type Writer struct {
 	site    string
 }
 
+// emissionError marks a failed stdout emission. Failure recognizes the marker
+// through wrapping errors and avoids appending a second machine envelope to a
+// stream that may already contain a partial success payload.
+type emissionError struct {
+	cause error
+}
+
+func (err *emissionError) Error() string {
+	return "output emission failed"
+}
+
+func (err *emissionError) Unwrap() error {
+	return err.cause
+}
+
 // New builds a Writer over stdout and stderr.
 func New(format Format, fields []string) *Writer {
 	return &Writer{Format: format, Fields: fields, Out: os.Stdout, Err: os.Stderr}
@@ -166,20 +182,23 @@ func (w *Writer) Validate(data any) error {
 }
 
 func (w *Writer) success(data any, truncated bool, nextCursor string, paged bool) error {
+	var payload []byte
+	var err error
 	switch w.Format {
 	case FormatText:
-		return w.renderText(data)
+		payload, err = w.renderText(data)
 	case FormatRaw:
 		if len(w.Fields) > 0 {
 			return errx.Usage("--fields cannot be combined with --output raw")
 		}
-		return w.encode(data)
+		payload, err = marshalLine(data)
 	case FormatJSON:
-		payload, err := w.project(data)
+		var projected any
+		projected, err = w.project(data)
 		if err != nil {
 			return err
 		}
-		env := Envelope{OK: true, V: errx.EnvelopeVersion, Data: payload}
+		env := Envelope{OK: true, V: errx.EnvelopeVersion, Data: projected}
 		rows, collection, _ := asRows(data)
 		if collection || paged || w.profile != "" || w.site != "" || nextCursor != "" {
 			env.Meta = &Meta{Profile: w.profile, Site: w.site, NextCursor: nextCursor}
@@ -189,10 +208,14 @@ func (w *Writer) success(data any, truncated bool, nextCursor string, paged bool
 			env.Meta.Count = &count
 			env.Meta.Truncated = boolPtr(truncated)
 		}
-		return w.encode(env)
+		payload, err = marshalLine(env)
 	default:
 		return errx.Internal("unsupported output format %q", w.Format)
 	}
+	if err != nil {
+		return err
+	}
+	return w.write(payload)
 }
 
 // Failure writes one error envelope and returns the process exit status.
@@ -215,31 +238,69 @@ func (w *Writer) Failure(err error) errx.Code {
 			body.RetryAfter = typed.RetryAfter.String()
 		}
 	}
+	var emitted *emissionError
+	if errors.As(err, &emitted) {
+		w.writeFailureDiagnostic(body, hint)
+		return code
+	}
 
 	if w.Format == FormatText {
-		_, _ = fmt.Fprintf(w.Err, "error: %s\n", singleLine(body.Message))
-		if hint != "" {
-			_, _ = fmt.Fprintf(w.Err, "hint: %s\n", singleLine(hint))
-		}
-		for _, candidate := range append(body.Candidates, body.DidYouMean...) {
-			_, _ = fmt.Fprintf(w.Err, "  - %s (%s)\n", singleLine(candidate.Name), singleLine(candidate.ID))
-		}
+		w.writeTextFailure(body, hint)
 		return code
 	}
 
 	env := Envelope{OK: false, V: errx.EnvelopeVersion, Error: body, Hint: hint}
 	if encodeErr := w.encode(env); encodeErr != nil {
-		_, _ = fmt.Fprintf(w.Err, "error: %s\n", body.Message)
-		_, _ = fmt.Fprintf(w.Err, "error: could not encode error envelope: %v\n", encodeErr)
+		w.writeFailureDiagnostic(body, hint)
 	}
 	return code
 }
 
 func (w *Writer) encode(value any) error {
-	if err := json.NewEncoder(w.Out).Encode(value); err != nil {
-		return errx.Internal("encode output: %v", err)
+	payload, err := marshalLine(value)
+	if err != nil {
+		return err
+	}
+	return w.write(payload)
+}
+
+func marshalLine(value any) ([]byte, error) {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return nil, errx.Internal("encode output: %v", err)
+	}
+	return append(payload, '\n'), nil
+}
+
+func (w *Writer) write(payload []byte) error {
+	if len(payload) == 0 {
+		return nil
+	}
+	written, err := w.Out.Write(payload)
+	if err != nil {
+		return errx.Internal("write output failed").Wrap(&emissionError{cause: err})
+	}
+	if written != len(payload) {
+		return errx.Internal("write output failed").Wrap(&emissionError{cause: io.ErrShortWrite})
 	}
 	return nil
+}
+
+func (w *Writer) writeTextFailure(body *ErrorBody, hint string) {
+	_, _ = fmt.Fprintf(w.Err, "error: %s\n", singleLine(body.Message))
+	if hint != "" {
+		_, _ = fmt.Fprintf(w.Err, "hint: %s\n", singleLine(hint))
+	}
+	for _, candidate := range append(body.Candidates, body.DidYouMean...) {
+		_, _ = fmt.Fprintf(w.Err, "  - %s (%s)\n", singleLine(candidate.Name), singleLine(candidate.ID))
+	}
+}
+
+func (w *Writer) writeFailureDiagnostic(body *ErrorBody, hint string) {
+	_, _ = fmt.Fprintf(w.Err, "error: %s: %s\n", singleLine(body.Code), singleLine(body.Message))
+	if hint != "" {
+		_, _ = fmt.Fprintf(w.Err, "hint: %s\n", singleLine(hint))
+	}
 }
 
 func (w *Writer) project(data any) (any, error) {
@@ -276,25 +337,26 @@ func (w *Writer) project(data any) (any, error) {
 	return projected, nil
 }
 
-func (w *Writer) renderText(data any) error {
+func (w *Writer) renderText(data any) ([]byte, error) {
 	rows, _, ok := asRows(data)
 	if !ok {
 		if len(w.Fields) > 0 {
-			return errx.Usage("--fields is not supported for this command")
+			return nil, errx.Usage("--fields is not supported for this command")
 		}
-		return w.encode(data)
+		return marshalLine(data)
 	}
 	if len(rows) == 0 && len(w.Fields) > 0 {
 		if schema := collectionSchema(data); schema != nil {
 			if _, err := selectFields(schema.Fields(), w.Fields); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
+	var output bytes.Buffer
 	for _, row := range rows {
 		fields, err := selectFields(row.Fields(), w.Fields)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		parts := make([]string, 0, len(fields))
 		for _, field := range fields {
@@ -304,11 +366,9 @@ func (w *Writer) renderText(data any) error {
 				parts = append(parts, singleLine(field.Value))
 			}
 		}
-		if _, err := fmt.Fprintln(w.Out, strings.Join(parts, "  ")); err != nil {
-			return errx.Internal("write output: %v", err)
-		}
+		_, _ = fmt.Fprintln(&output, strings.Join(parts, "  "))
 	}
-	return nil
+	return output.Bytes(), nil
 }
 
 func selectFields(available []Field, wanted []string) ([]Field, error) {

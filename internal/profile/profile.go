@@ -46,6 +46,10 @@ func CredentialIdentity(value Profile) string {
 	for _, capability := range value.Capabilities {
 		capabilities = append(capabilities, string(capability))
 	}
+	expiry := "expires_at=absent"
+	if value.ExpiresAt != nil {
+		expiry = "expires_at=utc:" + value.ExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
 	canonical := strings.Join([]string{
 		value.Name,
 		value.Site,
@@ -53,6 +57,7 @@ func CredentialIdentity(value Profile) string {
 		value.CloudID,
 		value.CredentialGeneration,
 		strings.Join(capabilities, ","),
+		expiry,
 	}, "|")
 	digest := sha256.Sum256([]byte(canonical))
 	return hex.EncodeToString(digest[:])

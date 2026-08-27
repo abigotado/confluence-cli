@@ -16,7 +16,7 @@
 - Overall Score: 93/100 (Strong)
 - The read MVP and guarded page-write surface have no known reachable or module-level vulnerabilities after upgrading `golang.org/x/sys` to the first fixed release for `GO-2026-5024`.
 - No token, key, credential file, or hardcoded secret was found. Gitleaks reported zero findings with redaction enabled.
-- The strongest controls are bounded no-echo token input, the native fail-no-UI Keychain boundary, atomic token/profile-identity/generation/capability binding, non-serializable credentials, fixed Atlassian gateway, refused redirects, fail-closed pagination, generation-bound space allowlists, local-only dry-run, profile-identity-bound write confirmation, non-replayable one-shot mutations, ambiguous-outcome handling, immutable GitHub Action pins, and the generated machine contract.
+- The strongest controls are bounded no-echo token input, the native fail-no-UI Keychain boundary, atomic token/profile-identity/optional-expiry/generation/capability binding, non-serializable credentials, fixed Atlassian gateway, refused redirects, fail-closed pagination, identity-bound space allowlists, local-only dry-run, full-profile-identity-bound write confirmation, non-replayable one-shot mutations, ambiguous-outcome handling, verified-write stdout-failure reporting, immutable GitHub Action pins, and the generated machine contract.
 - The weakest scored area is automation because there is no second filesystem scanner or pre-commit secret scanner. Pinned Govulncheck, module checksum verification, Dependabot, race tests, and PR CI are present.
 - Priority recommendation: keep delete, admin, bulk, raw-JSON, automatic write retries, and unapproved publication outside the contract. Migrate the deprecated Keychain no-UI constant to `LAContext.interactionNotAllowed` only when equivalent no-prompt behavior remains proven.
 
@@ -41,6 +41,9 @@
   - `.github/workflows/go.yaml:7-13` runs CI on pushes and pull requests.
   - `.github/workflows/go.yaml:45-55` verifies checksums and runs pinned Govulncheck.
   - `.github/dependabot.yml:3-27` schedules Go-module and Actions updates.
+  - `.github/workflows/release.yaml` defaults to `contents: read`, disables
+    checkout credential persistence, and exposes `GITHUB_TOKEN` only to the
+    final GoReleaser publish step.
   - `reports/.artifacts/step_07_security_trivy.md` records the optional scanner skip.
 - Risks: A detector-specific false negative could remain unnoticed until another scanner or manual review finds it.
 - Recommendations:
@@ -93,6 +96,12 @@
   - `internal/auth/store.go:32-48` excludes credentials from JSON and redacts formatting.
   - `internal/confluence/client.go:176-192` constructs Basic auth in memory without logging the header.
   - Guarded-write receipts expose body byte counts and SHA-256 digests, never bodies, titles, tokens, or authorization headers.
+  - Optional expiry participates in the credential, allowlist, and intent
+    identity. The migration invalidates prior hashes; recovery requires
+    re-login, allowlist replacement, and a newly reviewed dry-run.
+  - A verified write followed by stdout failure reports
+    `WRITE_APPLIED_LOCAL_FAILURE` with do-not-retry guidance on stderr; stdout
+    may be empty or truncated.
   - HTTP credential tests cover both JSON and structured-log redaction.
   - `reports/.artifacts/step_03_security_secret_patterns.md` reports zero pattern findings.
   - `reports/.artifacts/step_04_security_gitleaks.md` reports zero working-tree and history findings.
@@ -144,6 +153,9 @@
   - `go.mod:5-13` contains only registry-resolved modules and no replacements.
   - `.github/workflows/go.yaml:82-96` rehearses GoReleaser and rejects Darwin artifacts.
   - `.github/workflows/go.yaml`, `.github/workflows/release.yaml`, and `.github/workflows/agent_harness.yaml` pin every third-party Action to a 40-character commit SHA.
+  - Release checkout credentials are not persisted, workflow permissions
+    default to read-only contents, and `GITHUB_TOKEN` is step-scoped to final
+    publication.
   - `.goreleaser.yaml` emits checksum-protected Linux and Windows archives only.
   - The local snapshot rehearsal produced no Darwin artifacts and performed no publication.
 - Risks: Adding a prebuilt unsigned macOS archive or a Homebrew Formula before an immutable public tag and SHA would weaken the credential-backend and provenance guarantees.
@@ -164,7 +176,7 @@
 
 ## 9. Remediation Priority Matrix
 
-1. [LOW]: Before publication, repeat Govulncheck, Gitleaks with redaction, race tests, and the release snapshot rehearsal.
+1. [LOW]: Before each release, repeat Govulncheck, Gitleaks with redaction, race tests, and the release snapshot rehearsal.
 2. [LOW]: Migrate to `LAContext.interactionNotAllowed` only with tests proving Keychain operations still fail rather than show UI.
 3. [LOW]: Evaluate compatible dependency updates through Dependabot and the complete CI gate.
 4. [LOW]: Consider adding a pinned second scanner after measuring false positives and maintenance cost.

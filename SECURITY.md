@@ -23,7 +23,8 @@ settings before reporting the incident.
 - Tokens are accepted through bounded stdin and stored only in macOS Keychain.
 - The non-secret profile registry is private (`0700` directory, `0600` file).
 - The non-secret write-policy registry has the same permissions and binds exact
-  space IDs to the profile's credential generation and declared capabilities.
+  space IDs to the profile's optional expiry, credential generation, and
+  declared capabilities.
 - Every network call requires an explicit `--profile`; no active-profile switch
   exists.
 - Production HTTP requests refuse redirects and restrict credential-bearing
@@ -40,12 +41,18 @@ settings before reporting the incident.
 - Tests use fake stores and local HTTP servers; they never read or mutate the
   real Keychain.
 - Page dry-runs read only non-secret local profile metadata, bind confirmation
-  to the exact profile identity, and omit body content. Versioned Keychain
-  payloads bind tokens to the full profile identity, credential generation,
-  and capabilities; mismatches
+  to the exact profile identity (including optional expiry), and omit body
+  content. Versioned Keychain payloads bind tokens to the full profile identity,
+  optional expiry, credential generation, and capabilities; mismatches
   block every network path. Confirmed writes use typed payloads, refuse redirects and retries, and dispatch once. An uncertain
   post-dispatch outcome is `WRITE_OUTCOME_UNKNOWN` and must be reconciled, not
   automatically repeated.
+- The identity migration that added optional expiry invalidates earlier
+  credential, allowlist, and dry-run hashes. Recovery is an exact-profile
+  re-login, complete allowlist replacement, and a newly reviewed dry-run.
+- After a verified write, a broken stdout may be empty or contain a truncated
+  success envelope. Stderr reports `WRITE_APPLIED_LOCAL_FAILURE` with
+  do-not-retry guidance; the verified write must not be repeated.
 
 Compromise of the local user account, macOS itself, Confluence Cloud, or Atlassian's
 permission model is outside this project's security boundary.

@@ -10,6 +10,7 @@ class VerifyPortableReleasePolicyTest < Minitest::Test
   VERIFIER = File.join(__dir__, "verify-portable-release-policy.rb")
   CONFIG = YAML.safe_load(File.read(File.join(ROOT, ".goreleaser.yaml")), permitted_classes: [], aliases: false)
   RELEASE_WORKFLOW = File.read(File.join(ROOT, ".github/workflows/release.yaml"))
+  RELEASE_WORKFLOW_CONFIG = YAML.safe_load(RELEASE_WORKFLOW, permitted_classes: [], aliases: false)
 
   def verify(config)
     Tempfile.create(["goreleaser", ".yaml"]) do |file|
@@ -40,6 +41,30 @@ class VerifyPortableReleasePolicyTest < Minitest::Test
   def test_release_requires_the_tagged_commit_on_the_default_branch
     assert_includes RELEASE_WORKFLOW, "refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
     assert_includes RELEASE_WORKFLOW, 'git merge-base --is-ancestor HEAD "refs/remotes/origin/${DEFAULT_BRANCH}"'
+  end
+
+  def test_release_checkout_does_not_persist_credentials
+    checkout = release_steps.find { |step| step["uses"]&.start_with?("actions/checkout@") }
+
+    refute_nil checkout
+    assert_equal false, checkout.fetch("with").fetch("persist-credentials")
+  end
+
+  def test_release_workflow_defaults_to_read_only_contents
+    assert_equal({ "contents" => "read" }, RELEASE_WORKFLOW_CONFIG.fetch("permissions"))
+  end
+
+  def test_github_token_is_scoped_to_the_final_publish_step
+    release_job = RELEASE_WORKFLOW_CONFIG.fetch("jobs").fetch("release")
+    refute_includes RELEASE_WORKFLOW_CONFIG.fetch("env", {}), "GITHUB_TOKEN"
+    refute_includes release_job.fetch("env", {}), "GITHUB_TOKEN"
+    assert_equal 1, RELEASE_WORKFLOW.scan(/\$\{\{\s*(?:secrets\.GITHUB_TOKEN|github\.token)\s*\}\}/i).length
+
+    token_steps = release_steps.select { |step| step.fetch("env", {}).key?("GITHUB_TOKEN") }
+    assert_equal 1, token_steps.length
+    assert_same release_steps.last, token_steps.first
+    assert_equal "goreleaser release", token_steps.first.fetch("name")
+    assert_equal "${{ secrets.GITHUB_TOKEN }}", token_steps.first.fetch("env").fetch("GITHUB_TOKEN")
   end
 
   def test_github_actions_are_pinned_to_commit_shas
@@ -152,5 +177,11 @@ class VerifyPortableReleasePolicyTest < Minitest::Test
 
     refute success
     assert_includes stderr, "configuration contains a Gatekeeper quarantine bypass"
+  end
+
+  private
+
+  def release_steps
+    RELEASE_WORKFLOW_CONFIG.fetch("jobs").fetch("release").fetch("steps")
   end
 end

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestProfileValidate(t *testing.T) {
@@ -54,6 +55,31 @@ func TestProfileValidate(t *testing.T) {
 				t.Fatalf("Validate() error = %v, want ErrInvalidProfile", err)
 			}
 		})
+	}
+}
+
+func TestCredentialIdentityIncludesCanonicalExpiry(t *testing.T) {
+	base := Profile{
+		Name:                 "work",
+		Site:                 "https://tenant.atlassian.net",
+		Email:                "user@example.com",
+		CloudID:              "cloud",
+		CredentialGeneration: strings.Repeat("A", credentialGenerationLength),
+		Capabilities:         []Capability{CapabilityRead},
+	}
+	withoutExpiry := CredentialIdentity(base)
+	instant := time.Date(2035, time.June, 7, 8, 9, 10, 123456789, time.UTC)
+	withExpiry := base
+	withExpiry.ExpiresAt = &instant
+	if got := CredentialIdentity(withExpiry); got == withoutExpiry {
+		t.Fatalf("expiry mutation did not change identity %q", got)
+	}
+
+	equivalent := instant.In(time.FixedZone("test-offset", -3*60*60))
+	withEquivalentExpiry := base
+	withEquivalentExpiry.ExpiresAt = &equivalent
+	if got, want := CredentialIdentity(withEquivalentExpiry), CredentialIdentity(withExpiry); got != want {
+		t.Fatalf("equivalent instant identity = %q, want %q", got, want)
 	}
 }
 

@@ -223,19 +223,29 @@ Dry-run reads only the bounded regular body file and current non-secret profile
 metadata. It never reads Keychain or makes a network call. The receipt omits
 body content and includes byte counts, a content digest, and `intent_sha256`
 binding every write-relevant input plus the exact profile identity (site,
-cloud, credential generation, and capabilities). After reviewing the exact
-receipt, re-run unchanged with
+email, cloud, optional expiry, credential generation, and capabilities). After
+reviewing the exact receipt, re-run unchanged with
 `--confirm-intent INTENT_SHA256 --yes`; any changed file, title, target, version,
 or profile requires a new preview and confirmation. The real path revalidates
 capability, allowlist, space/page identity, parent, and expected version before
 dispatching exactly one request.
 
 Keychain payloads are versioned and bind the token to the exact non-secret
-profile identity, credential generation, and capability set. A partial login/rollback failure therefore
-leaves a detectable mismatch: every network command fails closed with
+profile identity, including optional expiry, credential generation, and
+capability set. The same identity binds the write allowlist and dry-run intent.
+The identity migration that added expiry invalidates earlier credential,
+allowlist, and intent hashes. Recover by logging in again, replacing the exact
+space allowlist, and producing and reviewing a new dry-run. This is separate
+from `auth migrate-keychain`, which changes Keychain access policy but cannot
+refresh an identity binding. A partial login/rollback failure likewise leaves a
+detectable mismatch: every network command fails closed with
 `CREDENTIAL_BINDING_MISMATCH` until the exact profile is logged in again.
 
 Never automatically retry `WRITE_OUTCOME_UNKNOWN`; re-read and reconcile first.
+If Confluence success was fully verified but stdout then fails, stdout may be
+empty or contain a truncated attempted success envelope. Stderr reports
+`WRITE_APPLIED_LOCAL_FAILURE` with do-not-retry guidance; the write is known to
+have applied and must not be repeated.
 See [`docs/guarded-writes.md`](docs/guarded-writes.md). Delete, admin, bulk,
 attachment, and raw-JSON writes remain out of scope.
 

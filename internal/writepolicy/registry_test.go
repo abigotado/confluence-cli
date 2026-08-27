@@ -30,7 +30,7 @@ func testProfile(name string) profile.Profile {
 
 func TestIdentityForUsesEveryCanonicalNonSecretField(t *testing.T) {
 	value := testProfile("work")
-	if got, want := IdentityFor(value), "ce3fd261322f854fe6139e35670c8b189b47458e04692ec8de954f1e2146773e"; got != want {
+	if got, want := IdentityFor(value), "7b315e08e9f8f6ffa18ffd9bacb4219001855a1bc2da7a6490cefa06dae77f07"; got != want {
 		t.Fatalf("IdentityFor() = %q, want %q", got, want)
 	}
 	uppercaseEmail := value
@@ -53,6 +53,11 @@ func TestIdentityForUsesEveryCanonicalNonSecretField(t *testing.T) {
 		}},
 		{name: "capabilities", change: func(p profile.Profile) profile.Profile {
 			p.Capabilities = []profile.Capability{profile.CapabilityRead}
+			return p
+		}},
+		{name: "expiry", change: func(p profile.Profile) profile.Profile {
+			expiresAt := time.Date(2035, time.June, 7, 8, 9, 10, 123456789, time.UTC)
+			p.ExpiresAt = &expiresAt
 			return p
 		}},
 	}
@@ -161,6 +166,11 @@ func TestRegistryPersistsStrictIdentityBoundPolicy(t *testing.T) {
 		}},
 		{name: "capabilities", change: func(p profile.Profile) profile.Profile {
 			p.Capabilities = []profile.Capability{profile.CapabilityRead}
+			return p
+		}},
+		{name: "expiry", change: func(p profile.Profile) profile.Profile {
+			expiresAt := time.Date(2035, time.June, 7, 8, 9, 10, 123456789, time.UTC)
+			p.ExpiresAt = &expiresAt
 			return p
 		}},
 	}

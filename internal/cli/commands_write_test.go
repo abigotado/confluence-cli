@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -17,6 +18,18 @@ import (
 )
 
 const pageBodySentinel = "<p>PAGE_BODY_SENTINEL</p>"
+
+type failingMutationOutput struct {
+	bytes.Buffer
+	calls int
+}
+
+func (writer *failingMutationOutput) Write(payload []byte) (int, error) {
+	writer.calls++
+	written := len(payload) / 2
+	_, _ = writer.Buffer.Write(payload[:written])
+	return written, errors.New("test output failure")
+}
 
 func writeBodyFile(t *testing.T) string {
 	t.Helper()
@@ -112,6 +125,48 @@ func TestPageCreateRejectsProfileReplacementAfterDryRun(t *testing.T) {
 	store.credentials["work"] = auth.Credential{
 		Token: "replacement-token", ProfileIdentity: profile.CredentialIdentity(replaced), Generation: replaced.CredentialGeneration,
 		Capabilities: append([]profile.Capability(nil), replaced.Capabilities...),
+	}
+	stdout.Reset()
+	code := runApp(app,
+		"pages", "create", "--profile", "work", "--space-id", "123", "--title", "Created", "--body-file", bodyFile,
+		"--confirm-intent", approved, "--yes", "-o", "json",
+	)
+	if code != errx.CodeConfirm || store.loadCalls != 0 || reader.spaceCalls != 0 || reader.createCalls != 0 {
+		t.Fatalf("code=%d load=%d space=%d create=%d output=%s", code, store.loadCalls, reader.spaceCalls, reader.createCalls, stdout.String())
+	}
+	if decode(t, stdout)["error"].(map[string]any)["code"] != "WRITE_INTENT_CONFIRMATION_REQUIRED" {
+		t.Fatalf("output=%s", stdout.String())
+	}
+}
+
+func TestPageCreateRejectsExpiryOnlyChangeAfterDryRunBeforeCredentialOrNetwork(t *testing.T) {
+	app, registry, store, reader, stdout, _ := testApp(t)
+	configureGuardedWrite(t, app, registry, store, reader)
+	now := time.Date(2030, time.January, 2, 3, 4, 5, 0, time.UTC)
+	app.now = func() time.Time { return now }
+	selected := registry.profiles["work"]
+	initialExpiry := now.Add(24 * time.Hour)
+	selected.ExpiresAt = &initialExpiry
+	registry.profiles["work"] = selected
+	bodyFile := writeBodyFile(t)
+	previewArgs := []string{
+		"pages", "create", "--profile", "work", "--space-id", "123", "--title", "Created",
+		"--body-file", bodyFile, "--dry-run", "-o", "json",
+	}
+	if code := runApp(app, previewArgs...); code != errx.CodeOK {
+		t.Fatalf("dry-run code=%d output=%s", code, stdout.String())
+	}
+	approved := decode(t, stdout)["data"].(map[string]any)["intent_sha256"].(string)
+
+	changedExpiry := now.Add(48 * time.Hour)
+	selected.ExpiresAt = &changedExpiry
+	registry.profiles["work"] = selected
+	store.credentials["work"] = auth.Credential{
+		Token: "stored-token", ProfileIdentity: profile.CredentialIdentity(selected), Generation: selected.CredentialGeneration,
+		Capabilities: append([]profile.Capability(nil), selected.Capabilities...),
+	}
+	if _, err := app.policies.Set(context.Background(), selected, []string{"123"}); err != nil {
+		t.Fatal(err)
 	}
 	stdout.Reset()
 	code := runApp(app,
@@ -327,20 +382,80 @@ func TestPageUpdatePreservesPreflightParent(t *testing.T) {
 }
 
 func TestPageCreateReportsAppliedWhenProfileLockFinalizationFails(t *testing.T) {
-	app, registry, store, reader, stdout, _ := testApp(t)
-	configureGuardedWrite(t, app, registry, store, reader)
-	reader.created = confluence.Page{ID: "456", SpaceID: "123", Title: "Created", Status: "current", Version: confluence.PageVersion{Number: 1}}
-	registry.lockFinalErr = errors.New("profile lock finalization failed")
-	bodyFile := writeBodyFile(t)
-	code := runApp(app,
-		"pages", "create", "--profile", "work", "--space-id", "123", "--title", "Created",
-		"--body-file", bodyFile, "--confirm-intent", confirmedPageIntent(t, "pages.create", "123", "", "", 0, "Created"), "--yes", "-o", "json",
-	)
-	if code != errx.CodeInternal || reader.createCalls != 1 {
-		t.Fatalf("code=%d create=%d output=%s", code, reader.createCalls, stdout.String())
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "untyped", err: errors.New("profile lock finalization failed")},
+		{name: "typed", err: errx.Retryable("PROFILE_LOCK_BUSY", time.Second, "profile lock finalization failed")},
 	}
-	if decode(t, stdout)["error"].(map[string]any)["code"] != "WRITE_APPLIED_LOCAL_FAILURE" {
-		t.Fatalf("output=%s", stdout.String())
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			app, registry, store, reader, stdout, _ := testApp(t)
+			configureGuardedWrite(t, app, registry, store, reader)
+			reader.created = confluence.Page{ID: "456", SpaceID: "123", Title: "Created", Status: "current", Version: confluence.PageVersion{Number: 1}}
+			registry.lockFinalErr = test.err
+			bodyFile := writeBodyFile(t)
+			code := runApp(app,
+				"pages", "create", "--profile", "work", "--space-id", "123", "--title", "Created",
+				"--body-file", bodyFile, "--confirm-intent", confirmedPageIntent(t, "pages.create", "123", "", "", 0, "Created"), "--yes", "-o", "json",
+			)
+			if code != errx.CodeInternal || reader.createCalls != 1 {
+				t.Fatalf("code=%d create=%d output=%s", code, reader.createCalls, stdout.String())
+			}
+			if decode(t, stdout)["error"].(map[string]any)["code"] != "WRITE_APPLIED_LOCAL_FAILURE" {
+				t.Fatalf("output=%s", stdout.String())
+			}
+		})
+	}
+}
+
+func TestPageMutationOutputFailureDoesNotRetryMutationOrStdout(t *testing.T) {
+	tests := []struct {
+		name      string
+		configure func(*fakeReader)
+		args      func(string) []string
+		calls     func(*fakeReader) int
+	}{
+		{
+			name: "create",
+			configure: func(reader *fakeReader) {
+				reader.created = confluence.Page{ID: "456", SpaceID: "123", Title: "Created", Status: "current", Version: confluence.PageVersion{Number: 1}}
+			},
+			args: func(bodyFile string) []string {
+				return []string{"pages", "create", "--profile", "work", "--space-id", "123", "--title", "Created", "--body-file", bodyFile, "--confirm-intent", confirmedPageIntent(t, "pages.create", "123", "", "", 0, "Created"), "--yes", "-o", "json"}
+			},
+			calls: func(reader *fakeReader) int { return reader.createCalls },
+		},
+		{
+			name: "update",
+			configure: func(reader *fakeReader) {
+				reader.page = confluence.Page{ID: "456", SpaceID: "123", Status: "current", Version: confluence.PageVersion{Number: 7}}
+				reader.updated = confluence.Page{ID: "456", SpaceID: "123", Title: "Updated", Status: "current", Version: confluence.PageVersion{Number: 8}}
+			},
+			args: func(bodyFile string) []string {
+				return []string{"pages", "update", "456", "--profile", "work", "--space-id", "123", "--expected-version", "7", "--title", "Updated", "--body-file", bodyFile, "--confirm-intent", confirmedPageIntent(t, "pages.update", "123", "456", "", 7, "Updated"), "--yes", "-o", "json"}
+			},
+			calls: func(reader *fakeReader) int { return reader.updateCalls },
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			app, registry, store, reader, _, stderr := testApp(t)
+			configureGuardedWrite(t, app, registry, store, reader)
+			test.configure(reader)
+			stdout := &failingMutationOutput{}
+			app.stdout = stdout
+			code := runApp(app, test.args(writeBodyFile(t))...)
+			if code != errx.CodeInternal || test.calls(reader) != 1 || stdout.calls != 1 {
+				t.Fatalf("code=%d mutation calls=%d stdout writes=%d stdout=%q stderr=%q", code, test.calls(reader), stdout.calls, stdout.String(), stderr.String())
+			}
+			for _, want := range []string{"WRITE_APPLIED_LOCAL_FAILURE", "do not retry"} {
+				if !strings.Contains(stderr.String(), want) {
+					t.Errorf("stderr missing %q: %q", want, stderr.String())
+				}
+			}
+		})
 	}
 }
 

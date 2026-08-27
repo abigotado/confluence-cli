@@ -267,7 +267,10 @@ func (a *App) newPagesCreateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.out.Success(result)
+			if err := a.out.Success(result); err != nil {
+				return errx.WriteAppliedLocalFailure("pages.create").Wrap(err)
+			}
+			return nil
 		},
 	}
 	flags := command.Flags()
@@ -370,7 +373,10 @@ func (a *App) newPagesUpdateCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			return a.out.Success(result)
+			if err := a.out.Success(result); err != nil {
+				return errx.WriteAppliedLocalFailure("pages.update").Wrap(err)
+			}
+			return nil
 		},
 	}
 	flags := command.Flags()
@@ -440,12 +446,12 @@ func (a *App) runGuardedPageMutation(
 		})
 	})
 	if err != nil {
+		if verifiedApplied {
+			return pageMutationReceipt{}, errx.WriteAppliedLocalFailure(operation).Wrap(err)
+		}
 		var typed *errx.Error
 		if errors.As(err, &typed) {
 			return pageMutationReceipt{}, typed
-		}
-		if verifiedApplied {
-			return pageMutationReceipt{}, errx.WriteAppliedLocalFailure(operation)
 		}
 		return pageMutationReceipt{}, translateLocal(err, a.profileName)
 	}

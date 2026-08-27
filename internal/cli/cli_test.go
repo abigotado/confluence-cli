@@ -121,6 +121,7 @@ type fakeReader struct {
 	createErr   error
 	updateErr   error
 	spaceCalls  int
+	spacesCalls int
 	pageCalls   int
 	createCalls int
 	updateCalls int
@@ -128,6 +129,7 @@ type fakeReader struct {
 }
 
 func (reader *fakeReader) ListSpaces(context.Context, confluence.ListOptions) (confluence.PageResult[confluence.Spaces], error) {
+	reader.spacesCalls++
 	return reader.spaces, nil
 }
 func (reader *fakeReader) GetSpace(context.Context, string) (confluence.Space, error) {
@@ -417,5 +419,39 @@ func TestNetworkCommandEmitsBoundedMachineEnvelope(t *testing.T) {
 	meta := envelope["meta"].(map[string]any)
 	if meta["profile"] != "work" || meta["next_cursor"] != "opaque-next" || meta["count"] != float64(1) {
 		t.Fatalf("meta=%v", meta)
+	}
+}
+
+func TestReadRejectsExpiryOnlyCredentialBindingMutationBeforeClientOrNetwork(t *testing.T) {
+	app, registry, store, reader, stdout, stderr := testApp(t)
+	bound := modernWriteProfile("work")
+	store.credentials["work"] = auth.Credential{
+		Token: cliTokenSentinel, ProfileIdentity: profile.CredentialIdentity(bound), Generation: bound.CredentialGeneration,
+		Capabilities: append([]profile.Capability(nil), bound.Capabilities...),
+	}
+	now := time.Date(2035, time.June, 7, 8, 9, 10, 0, time.UTC)
+	expiresAt := now.Add(24 * time.Hour)
+	selected := bound
+	selected.ExpiresAt = &expiresAt
+	registry.profiles["work"] = selected
+	app.now = func() time.Time { return now }
+	clientCalls := 0
+	app.newClient = func(profile.Profile, auth.Credential, *slog.Logger) (confluenceReader, error) {
+		clientCalls++
+		return reader, nil
+	}
+
+	code := runApp(app, "spaces", "list", "--profile", "work", "-o", "json")
+	if code != errx.CodeAuth {
+		t.Fatalf("code=%d output=%s stderr=%s", code, stdout.String(), stderr.String())
+	}
+	if got := decode(t, stdout)["error"].(map[string]any)["code"]; got != "CREDENTIAL_BINDING_MISMATCH" {
+		t.Fatalf("error code=%v output=%s", got, stdout.String())
+	}
+	if store.loadCalls != 1 || clientCalls != 0 || reader.spacesCalls != 0 {
+		t.Fatalf("load=%d client=%d network=%d", store.loadCalls, clientCalls, reader.spacesCalls)
+	}
+	if strings.Contains(stdout.String(), cliTokenSentinel) || strings.Contains(stderr.String(), cliTokenSentinel) {
+		t.Fatal("credential binding failure exposed the token")
 	}
 }

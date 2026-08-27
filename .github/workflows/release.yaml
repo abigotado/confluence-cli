@@ -35,6 +35,9 @@ jobs:
       - name: Git Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
+          # Release validation fetches explicitly and publishing receives the
+          # token only on the final GoReleaser step.
+          persist-credentials: false
           # GoReleaser needs the tags and history for versioning and notes.
           fetch-depth: 0
           # A fully qualified tag prevents a same-named branch winning lookup.
