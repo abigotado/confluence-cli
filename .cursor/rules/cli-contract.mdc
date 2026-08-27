@@ -46,6 +46,31 @@ wins and `internal/errx` is the thing that gets fixed.
 - `hint` is written for a machine reader: it states the next action
   (`pass --profile work`), not an apology.
 
+## Ordered consumer parsing
+
+Machine consumers capture stdout and stderr separately under fixed byte limits
+and apply this order:
+
+1. Stdout is valid only as exactly one complete JSON object, followed only by
+   whitespace, with an `ok` boolean and integer `v`. Empty output, parse failure,
+   premature EOF, multiple values, or missing/invalid `ok` or `v` is invalid.
+2. A valid stdout envelope is authoritative; stderr is ignored. This includes a
+   valid `WRITE_OUTCOME_UNKNOWN`, which remains unknown and must be reconciled,
+   never retried automatically.
+3. Only a confirmed `pages create` or `pages update` invocation carrying both
+   `--confirm-intent` and `--yes`, without `--dry-run`, may inspect bounded stderr
+   after invalid stdout. Only complete newline-terminated lines are eligible.
+4. The sole emergency markers are the corresponding exact, anchored, complete
+   lines `error: WRITE_APPLIED_LOCAL_FAILURE: pages.create applied, but local
+   finalization failed` and `error: WRITE_APPLIED_LOCAL_FAILURE: pages.update
+   applied, but local finalization failed`. Neither is accepted as a substring,
+   partial line, mid-line value, or for another command. An exact line means the
+   write is known applied and must not be retried.
+5. All other stderr is diagnostic. A confirmed write with invalid stdout and no
+   exact marker gets bounded reconciliation reads, but the caller never retries
+   automatically or claims the write applied. Other commands report invalid
+   machine output without inferring state from stderr.
+
 ## Exit codes
 
 Each code maps to a **distinct recovery action**. That is the test for whether a

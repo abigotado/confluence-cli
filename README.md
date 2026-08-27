@@ -143,6 +143,18 @@ exactly one envelope; diagnostics go to stderr.
 {"ok":true,"v":1,"data":{"id":"789012","title":"Roadmap"},"meta":{"profile":"work","site":"https://example.atlassian.net"}}
 ```
 
+Machine callers parse bounded stdout first and accept it only as one complete
+JSON object with an `ok` boolean and integer `v`; a valid envelope is
+authoritative and stderr is ignored. Only a confirmed page create/update with
+invalid stdout may inspect bounded stderr for the corresponding complete,
+newline-terminated `error: WRITE_APPLIED_LOCAL_FAILURE: pages.create applied,
+but local finalization failed` or `pages.update` line documented in the
+machine contract. That exact line means the write is known applied and must not
+be retried. Every other stderr line is
+diagnostic; reconcile a confirmed write with a bounded read, but never retry it
+automatically or claim it applied. A valid-envelope `WRITE_OUTCOME_UNKNOWN`
+remains unknown and follows the same bounded reconciliation rule.
+
 Failures use the same envelope and stable recovery-oriented exit codes:
 
 | Exit | Recovery |
@@ -222,9 +234,10 @@ confluence-cli pages update 789012 --profile work --space-id 123456 \
 Dry-run reads only the bounded regular body file and current non-secret profile
 metadata. It never reads Keychain or makes a network call. The receipt omits
 body content and includes byte counts, a content digest, and `intent_sha256`
-binding every write-relevant input plus the exact profile identity (site,
-email, cloud, optional expiry, credential generation, and capabilities). After
-reviewing the exact receipt, re-run unchanged with
+binding every write-relevant input plus the exact profile identity (profile
+name, site, lowercase email, Cloud ID, optional expiry, credential generation,
+and canonical capabilities). After reviewing the exact receipt, re-run unchanged
+with
 `--confirm-intent INTENT_SHA256 --yes`; any changed file, title, target, version,
 or profile requires a new preview and confirmation. The real path revalidates
 capability, allowlist, space/page identity, parent, and expected version before

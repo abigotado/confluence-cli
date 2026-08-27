@@ -213,14 +213,15 @@ func TestSuccessStagesEveryFormatIntoOneWrite(t *testing.T) {
 
 func TestFailureAfterSuccessEmissionErrorDoesNotWriteSecondEnvelope(t *testing.T) {
 	tests := []struct {
-		name   string
-		format Format
-		limit  int
-		err    error
+		name      string
+		format    Format
+		limit     int
+		err       error
+		operation string
 	}{
-		{name: "zero", format: FormatJSON, limit: 0, err: errors.New("closed output")},
-		{name: "partial", format: FormatRaw, limit: 2, err: errors.New("interrupted output")},
-		{name: "short", format: FormatText, limit: 2},
+		{name: "zero", format: FormatJSON, limit: 0, err: errors.New("closed output"), operation: "pages.create"},
+		{name: "partial", format: FormatRaw, limit: 2, err: errors.New("interrupted output"), operation: "pages.update"},
+		{name: "short", format: FormatText, limit: 2, operation: "pages.create"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -232,7 +233,7 @@ func TestFailureAfterSuccessEmissionErrorDoesNotWriteSecondEnvelope(t *testing.T
 				t.Fatal("Success error=nil, want emission failure")
 			}
 			beforeFailure := out.String()
-			code := w.Failure(errx.WriteAppliedLocalFailure("pages.create").Wrap(err))
+			code := w.Failure(errx.WriteAppliedLocalFailure(test.operation).Wrap(err))
 			if code != errx.CodeInternal {
 				t.Fatalf("Failure code=%d, want %d", code, errx.CodeInternal)
 			}
@@ -242,10 +243,10 @@ func TestFailureAfterSuccessEmissionErrorDoesNotWriteSecondEnvelope(t *testing.T
 			if out.String() != beforeFailure {
 				t.Fatalf("Failure appended stdout: before=%q after=%q", beforeFailure, out.String())
 			}
-			for _, want := range []string{"WRITE_APPLIED_LOCAL_FAILURE", "pages.create applied", "do not retry"} {
-				if !strings.Contains(stderr.String(), want) {
-					t.Errorf("stderr missing %q: %q", want, stderr.String())
-				}
+			wantStderr := "error: WRITE_APPLIED_LOCAL_FAILURE: " + test.operation + " applied, but local finalization failed\n" +
+				"hint: the Confluence write applied; do not retry it; report the local failure\n"
+			if stderr.String() != wantStderr {
+				t.Errorf("stderr=%q, want exact diagnostic %q", stderr.String(), wantStderr)
 			}
 		})
 	}

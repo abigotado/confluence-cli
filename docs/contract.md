@@ -23,6 +23,30 @@ prompts, warnings, and logs go to stderr. `error.code` is a stable
 `SCREAMING_SNAKE_CASE` value; add error detail there before considering a new
 process status.
 
+## JSON response recovery
+
+Apply this grammar in order:
+
+1. Parse stdout as exactly one JSON value. A single object with boolean `ok`
+   and integer `v` is the primary result; never replace it with stderr.
+2. Only for an explicitly confirmed `confluence-cli pages create` or
+   `confluence-cli pages update` whose stdout is empty, fails JSON parsing
+   (including premature EOF), contains multiple JSON values, or lacks either
+   `ok` or `v`, inspect at most the first 4096 bytes of stderr. Do not use
+   stderr as a contract fallback in any other case.
+3. In that bounded diagnostic, only one of these exact complete lines counts
+   as the known-applied marker:
+
+   - `error: WRITE_APPLIED_LOCAL_FAILURE: pages.create applied, but local finalization failed`
+   - `error: WRITE_APPLIED_LOCAL_FAILURE: pages.update applied, but local finalization failed`
+
+   Match from the anchored `error: WRITE_APPLIED_LOCAL_FAILURE:` at line start
+   through line end, never as a substring. This exact marker means known applied
+   and no retry; the write must not be repeated.
+4. Otherwise, do not retry and do not claim that the write applied. Use bounded
+   Confluence reads to reconcile page ID, space, title, parent, version, and
+   content before asking the operator about any further mutation.
+
 ## Exit codes
 
 Each status maps to a distinct caller recovery action.

@@ -59,11 +59,22 @@ In JSON mode stdout carries **only** the response envelope. Every log, warning,
 progress line, and prompt goes to stderr. Text, raw, and explicit help output
 are caller-selected exceptions; agents should use the non-TTY JSON default.
 
+Consumers validate bounded stdout before considering stderr: exactly one JSON
+object with an `ok` boolean and integer `v` is authoritative, including
+`WRITE_OUTCOME_UNKNOWN`. Only a confirmed page create/update whose stdout is
+invalid may inspect bounded stderr, and only the corresponding exact, anchored,
+complete `error: WRITE_APPLIED_LOCAL_FAILURE: pages.create applied, but local
+finalization failed` or `pages.update` line changes the outcome to known-applied
+and no-retry. Every other stderr value is diagnostic; reconcile a confirmed
+write with bounded reads without retrying it or claiming it applied.
+
 ## Adding a command
 
 Every network command requires an explicit `--profile`; there is no active or
 stored default profile. Page create/update must preserve the capability,
-credential-generation, exact-space allowlist, local dry-run, output
-prevalidation, profile-identity-bound confirmation, credential-payload binding,
-one-shot dispatch, and ambiguous-outcome rails in
+complete identity (profile name, site, lowercase email, Cloud ID, optional
+expiry, credential generation, and canonical capabilities), exact-space
+allowlist, local dry-run, output prevalidation, profile-identity-bound
+confirmation, credential-payload binding, one-shot dispatch, and
+ambiguous-outcome rails in
 `docs/guarded-writes.md`. No command may grow an ad hoc REST escape hatch.

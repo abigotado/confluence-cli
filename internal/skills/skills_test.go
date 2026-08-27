@@ -79,6 +79,65 @@ func TestEmbeddedPayloadMatchesSourceAndProviders(t *testing.T) {
 	}
 }
 
+func TestPortableSkillOrdersEmergencyWriteRecovery(t *testing.T) {
+	payload, err := payload(ProviderClaude)
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	skill := strings.Join(strings.Fields(string(payload["SKILL.md"])), " ")
+	ordered := []string{
+		"Parse bounded stdout first.",
+		"When stdout is valid, it is authoritative.",
+		"Only when stdout is invalid **and** the invocation was a confirmed",
+		"That exact emergency marker means the page write is known to have applied",
+		"Any other stderr remains diagnostic.",
+	}
+	previous := -1
+	for _, rule := range ordered {
+		index := strings.Index(skill, rule)
+		if index < 0 {
+			t.Fatalf("portable skill is missing emergency parser rule %q", rule)
+		}
+		if index <= previous {
+			t.Fatalf("emergency parser rule %q is out of order", rule)
+		}
+		previous = index
+	}
+
+	for _, rule := range []string{
+		"exactly one complete JSON object",
+		"Empty output, malformed JSON, premature EOF, multiple JSON",
+		"with an `ok` boolean and integer `v`",
+		"Ignore stderr entirely",
+		"a valid envelope whose `error.code` is `WRITE_OUTCOME_UNKNOWN` remains unknown",
+		"using both `--confirm-intent` and `--yes` without `--dry-run`",
+		"inspect at most the first 4096 bytes of stderr",
+		"Examine only complete newline-terminated lines",
+		"`error: WRITE_APPLIED_LOCAL_FAILURE: pages.create applied, but local finalization failed`",
+		"`error: WRITE_APPLIED_LOCAL_FAILURE: pages.update applied, but local finalization failed`",
+		"Match the entire line from its anchored `error:` start through line end",
+		"Do not accept either text as a substring",
+		"do a bounded reconciliation read, but never retry automatically and never claim that the write applied",
+		"For every other command with invalid stdout, report invalid machine output without inferring state from stderr",
+	} {
+		if !strings.Contains(skill, rule) {
+			t.Errorf("portable skill is missing fail-closed parser rule %q", rule)
+		}
+	}
+}
+
+func TestPortableSkillUsesCompleteProfileIdentity(t *testing.T) {
+	payload, err := payload(ProviderClaude)
+	if err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	skill := strings.Join(strings.Fields(string(payload["SKILL.md"])), " ")
+	const identity = "profile name, site, lowercase email, Cloud ID, optional expiry, credential generation, and canonical capabilities"
+	if !strings.Contains(skill, identity) {
+		t.Fatalf("portable skill does not name the complete profile identity")
+	}
+}
+
 func TestParseProviderAndScope(t *testing.T) {
 	for _, value := range []string{"codex", "claude", "all"} {
 		t.Run(value, func(t *testing.T) {

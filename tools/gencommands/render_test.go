@@ -58,3 +58,37 @@ func TestRenderMarkdownPinsWriteSafetyFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderMarkdownContainsOrderedInvalidStdoutRecoveryGrammar(t *testing.T) {
+	rendered := renderMarkdown(collect(rootCommand()))
+	ordered := []string{
+		"1. Parse stdout as exactly one JSON value.",
+		"2. Only for an explicitly confirmed `confluence-cli pages create` or",
+		"stdout is empty, fails JSON parsing",
+		"(including premature EOF), contains multiple JSON values, or lacks either",
+		"inspect at most the first 4096 bytes of stderr.",
+		"3. In that bounded diagnostic, only one of these exact complete lines counts",
+		"error: WRITE_APPLIED_LOCAL_FAILURE: pages.create applied, but local finalization failed",
+		"error: WRITE_APPLIED_LOCAL_FAILURE: pages.update applied, but local finalization failed",
+		"Match from the anchored `error: WRITE_APPLIED_LOCAL_FAILURE:` at line start",
+		"This exact marker means known applied",
+		"and no retry; the write must not be repeated.",
+		"4. Otherwise, do not retry and do not claim that the write applied.",
+		"Use bounded",
+		"Confluence reads to reconcile page ID, space, title, parent, version, and",
+	}
+	position := 0
+	for _, phrase := range ordered {
+		index := strings.Index(rendered[position:], phrase)
+		if index < 0 {
+			t.Fatalf("rendered command reference lacks ordered recovery phrase %q", phrase)
+		}
+		position += index + len(phrase)
+	}
+	if !strings.Contains(rendered, "A single object with boolean `ok`\n   and integer `v` is the primary result; never replace it with stderr.") {
+		t.Fatal("rendered command reference does not keep a valid ok/v envelope primary")
+	}
+	if !strings.Contains(rendered, "stderr as a contract fallback in any other case.") {
+		t.Fatal("rendered command reference does not limit stderr fallback to confirmed writes")
+	}
+}
