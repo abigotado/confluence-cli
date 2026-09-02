@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Git Checkout
@@ -34,6 +34,7 @@ jobs:
           cache: true
 
       - name: gofmt
+        shell: bash
         run: |
           UNFORMATTED=$(gofmt -l .)
           if [ -n "$UNFORMATTED" ]; then
@@ -86,7 +87,12 @@ jobs:
       # state, and a data race there would surface as a wrong rate-limit
       # decision rather than a crash.
       - name: go test
+        if: runner.os != 'Windows'
         run: go test -race ./...
+
+      - name: go test (Windows)
+        if: runner.os == 'Windows'
+        run: go test -count=1 ./...
 
       - name: goreleaser check and portable policy
         if: runner.os == 'Linux'
@@ -167,6 +173,7 @@ jobs:
       # The generated contract is what agents read. If regenerating changes it,
       # the committed copy no longer matches internal/errx.
       - name: Generated contract is current
+        shell: bash
         run: |
           go generate ./...
           DIRTY=$(git status --porcelain)
@@ -191,7 +198,7 @@ jobs:
           cache: true
 
       - name: Skill mutation fails closed
-        run: go test -race -run '^TestWindowsSkillMutationFailsClosed$' ./internal/skills
+        run: go test -count=1 -run '^TestWindowsSkillMutationFailsClosed$' ./internal/skills
 
       - name: Build unsupported credential backend
         run: go build ./cmd/confluence-cli

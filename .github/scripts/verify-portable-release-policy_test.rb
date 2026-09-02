@@ -10,6 +10,7 @@ class VerifyPortableReleasePolicyTest < Minitest::Test
   VERIFIER = File.join(__dir__, "verify-portable-release-policy.rb")
   CONFIG = YAML.safe_load(File.read(File.join(ROOT, ".goreleaser.yaml")), permitted_classes: [], aliases: false)
   GO_WORKFLOW = File.read(File.join(ROOT, ".github/workflows/go.yaml"))
+  GO_WORKFLOW_CONFIG = YAML.safe_load(GO_WORKFLOW, permitted_classes: [], aliases: false)
   RELEASE_WORKFLOW = File.read(File.join(ROOT, ".github/workflows/release.yaml"))
   RELEASE_WORKFLOW_CONFIG = YAML.safe_load(RELEASE_WORKFLOW, permitted_classes: [], aliases: false)
   RELEASE_PREFIX = "github.com/abigotado/confluence-cli/internal/cli.release"
@@ -68,6 +69,56 @@ class VerifyPortableReleasePolicyTest < Minitest::Test
     assert_includes GO_WORKFLOW, "--fields version,commit,commit_time"
     assert_includes GO_WORKFLOW, '[ "${commit}" != "${expected_commit}" ]'
     assert_includes GO_WORKFLOW, '[ "${commit_time}" != "${expected_commit_time}" ]'
+  end
+
+  def test_go_matrix_covers_linux_macos_and_windows
+    matrix = GO_WORKFLOW_CONFIG.fetch("jobs").fetch("test").fetch("strategy").fetch("matrix")
+
+    assert_equal %w[macos-latest ubuntu-latest windows-latest], matrix.fetch("os").sort
+  end
+
+  def test_go_matrix_uses_platform_appropriate_test_commands
+    steps = GO_WORKFLOW_CONFIG.fetch("jobs").fetch("test").fetch("steps")
+    race_test = steps.find { |step| step["name"] == "go test" }
+    windows_test = steps.find { |step| step["name"] == "go test (Windows)" }
+
+    refute_nil race_test
+    assert_equal "runner.os != 'Windows'", race_test.fetch("if")
+    assert_equal "go test -race ./...", race_test.fetch("run")
+    refute_nil windows_test
+    assert_equal "runner.os == 'Windows'", windows_test.fetch("if")
+    assert_equal "go test -count=1 ./...", windows_test.fetch("run")
+  end
+
+  def test_posix_blocks_that_reach_windows_use_bash
+    steps = GO_WORKFLOW_CONFIG.fetch("jobs").fetch("test").fetch("steps")
+
+    ["gofmt", "Generated contract is current"].each do |name|
+      step = steps.find { |candidate| candidate["name"] == name }
+      refute_nil step
+      assert_equal "bash", step.fetch("shell")
+    end
+  end
+
+  def test_windows_safety_keeps_fail_closed_checks
+    job = GO_WORKFLOW_CONFIG.fetch("jobs").fetch("windows-safety")
+    steps = job.fetch("steps")
+    mutation_test = steps.find { |step| step["name"] == "Skill mutation fails closed" }
+    credential_build = steps.find { |step| step["name"] == "Build unsupported credential backend" }
+
+    assert_equal "windows-latest", job.fetch("runs-on")
+    refute_nil mutation_test
+    assert_equal "go test -count=1 -run '^TestWindowsSkillMutationFailsClosed$' ./internal/skills", mutation_test.fetch("run")
+    refute_nil credential_build
+    assert_equal "go build ./cmd/confluence-cli", credential_build.fetch("run")
+  end
+
+  def test_required_check_aggregates_matrix_and_windows_safety
+    job = GO_WORKFLOW_CONFIG.fetch("jobs").fetch("required")
+
+    assert_equal "Build and test", job.fetch("name")
+    assert_equal "${{ always() }}", job.fetch("if")
+    assert_equal %w[test windows-safety], job.fetch("needs")
   end
 
   def test_release_requires_the_tagged_commit_on_the_default_branch
