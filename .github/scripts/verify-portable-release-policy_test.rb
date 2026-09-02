@@ -10,6 +10,8 @@ class VerifyPortableReleasePolicyTest < Minitest::Test
   VERIFIER = File.join(__dir__, "verify-portable-release-policy.rb")
   CONFIG = YAML.safe_load(File.read(File.join(ROOT, ".goreleaser.yaml")), permitted_classes: [], aliases: false)
   GO_WORKFLOW = File.read(File.join(ROOT, ".github/workflows/go.yaml"))
+  GO_WORKFLOW_CONFIG = YAML.safe_load(GO_WORKFLOW, permitted_classes: [], aliases: false)
+  GIT_ATTRIBUTES_PATH = File.join(ROOT, ".gitattributes")
   RELEASE_WORKFLOW = File.read(File.join(ROOT, ".github/workflows/release.yaml"))
   RELEASE_WORKFLOW_CONFIG = YAML.safe_load(RELEASE_WORKFLOW, permitted_classes: [], aliases: false)
   RELEASE_PREFIX = "github.com/abigotado/confluence-cli/internal/cli.release"
@@ -68,6 +70,72 @@ class VerifyPortableReleasePolicyTest < Minitest::Test
     assert_includes GO_WORKFLOW, "--fields version,commit,commit_time"
     assert_includes GO_WORKFLOW, '[ "${commit}" != "${expected_commit}" ]'
     assert_includes GO_WORKFLOW, '[ "${commit_time}" != "${expected_commit_time}" ]'
+  end
+
+  def test_go_matrix_covers_linux_macos_and_windows
+    matrix = GO_WORKFLOW_CONFIG.fetch("jobs").fetch("test").fetch("strategy").fetch("matrix")
+
+    assert_equal %w[macos-latest ubuntu-latest windows-latest], matrix.fetch("os").sort
+  end
+
+  def test_repository_enforces_lf_line_endings
+    assert_path_exists GIT_ATTRIBUTES_PATH
+    assert_equal "* text=auto eol=lf\n", File.read(GIT_ATTRIBUTES_PATH)
+  end
+
+  def test_go_matrix_uses_bash_for_every_run_step
+    defaults = GO_WORKFLOW_CONFIG.fetch("jobs").fetch("test").fetch("defaults")
+
+    assert_equal "bash", defaults.fetch("run").fetch("shell")
+  end
+
+  def test_go_matrix_uses_platform_appropriate_test_commands
+    steps = GO_WORKFLOW_CONFIG.fetch("jobs").fetch("test").fetch("steps")
+    test_steps = steps.select { |step| step.fetch("name", "").start_with?("go test") || step["name"] == "Darwin CGO-disabled tests" }
+
+    assert_equal [
+      { "name" => "Darwin CGO-disabled tests", "if" => "runner.os == 'macOS'", "env" => { "CGO_ENABLED" => 0 }, "run" => "go test ./..." },
+      { "name" => "go test", "if" => "runner.os != 'Windows'", "run" => "go test -race ./..." },
+      { "name" => "go test (Windows)", "if" => "runner.os == 'Windows'", "run" => "go test -count=1 ./..." },
+    ], test_steps
+  end
+
+  def test_darwin_and_linux_only_checks_keep_platform_conditions
+    steps = GO_WORKFLOW_CONFIG.fetch("jobs").fetch("test").fetch("steps")
+    expected_conditions = {
+      "Vulnerability scan" => "runner.os == 'Linux'",
+      "Darwin credential backend build modes" => "runner.os == 'macOS'",
+      "Darwin CGO-disabled tests" => "runner.os == 'macOS'",
+      "goreleaser check and portable policy" => "runner.os == 'Linux'",
+      "actionlint" => "runner.os == 'Linux'",
+    }
+
+    expected_conditions.each do |name, condition|
+      step = steps.find { |candidate| candidate["name"] == name }
+      refute_nil step
+      assert_equal condition, step.fetch("if")
+    end
+  end
+
+  def test_windows_safety_keeps_fail_closed_checks
+    job = GO_WORKFLOW_CONFIG.fetch("jobs").fetch("windows-safety")
+    steps = job.fetch("steps")
+    mutation_test = steps.find { |step| step["name"] == "Skill mutation fails closed" }
+    credential_build = steps.find { |step| step["name"] == "Build unsupported credential backend" }
+
+    assert_equal "windows-latest", job.fetch("runs-on")
+    refute_nil mutation_test
+    assert_equal "go test -race -run '^TestWindowsSkillMutationFailsClosed$' ./internal/skills", mutation_test.fetch("run")
+    refute_nil credential_build
+    assert_equal "go build ./cmd/confluence-cli", credential_build.fetch("run")
+  end
+
+  def test_required_check_aggregates_matrix_and_windows_safety
+    job = GO_WORKFLOW_CONFIG.fetch("jobs").fetch("required")
+
+    assert_equal "Build and test", job.fetch("name")
+    assert_equal "${{ always() }}", job.fetch("if")
+    assert_equal %w[test windows-safety], job.fetch("needs")
   end
 
   def test_release_requires_the_tagged_commit_on_the_default_branch
