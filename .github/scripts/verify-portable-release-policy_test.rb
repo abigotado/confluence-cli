@@ -11,6 +11,7 @@ class VerifyPortableReleasePolicyTest < Minitest::Test
   CONFIG = YAML.safe_load(File.read(File.join(ROOT, ".goreleaser.yaml")), permitted_classes: [], aliases: false)
   GO_WORKFLOW = File.read(File.join(ROOT, ".github/workflows/go.yaml"))
   GO_WORKFLOW_CONFIG = YAML.safe_load(GO_WORKFLOW, permitted_classes: [], aliases: false)
+  GIT_ATTRIBUTES_PATH = File.join(ROOT, ".gitattributes")
   RELEASE_WORKFLOW = File.read(File.join(ROOT, ".github/workflows/release.yaml"))
   RELEASE_WORKFLOW_CONFIG = YAML.safe_load(RELEASE_WORKFLOW, permitted_classes: [], aliases: false)
   RELEASE_PREFIX = "github.com/abigotado/confluence-cli/internal/cli.release"
@@ -77,26 +78,42 @@ class VerifyPortableReleasePolicyTest < Minitest::Test
     assert_equal %w[macos-latest ubuntu-latest windows-latest], matrix.fetch("os").sort
   end
 
-  def test_go_matrix_uses_platform_appropriate_test_commands
-    steps = GO_WORKFLOW_CONFIG.fetch("jobs").fetch("test").fetch("steps")
-    race_test = steps.find { |step| step["name"] == "go test" }
-    windows_test = steps.find { |step| step["name"] == "go test (Windows)" }
-
-    refute_nil race_test
-    assert_equal "runner.os != 'Windows'", race_test.fetch("if")
-    assert_equal "go test -race ./...", race_test.fetch("run")
-    refute_nil windows_test
-    assert_equal "runner.os == 'Windows'", windows_test.fetch("if")
-    assert_equal "go test -count=1 ./...", windows_test.fetch("run")
+  def test_repository_enforces_lf_line_endings
+    assert_path_exists GIT_ATTRIBUTES_PATH
+    assert_equal "* text=auto eol=lf\n", File.read(GIT_ATTRIBUTES_PATH)
   end
 
-  def test_posix_blocks_that_reach_windows_use_bash
-    steps = GO_WORKFLOW_CONFIG.fetch("jobs").fetch("test").fetch("steps")
+  def test_go_matrix_uses_bash_for_every_run_step
+    defaults = GO_WORKFLOW_CONFIG.fetch("jobs").fetch("test").fetch("defaults")
 
-    ["gofmt", "Generated contract is current"].each do |name|
+    assert_equal "bash", defaults.fetch("run").fetch("shell")
+  end
+
+  def test_go_matrix_uses_platform_appropriate_test_commands
+    steps = GO_WORKFLOW_CONFIG.fetch("jobs").fetch("test").fetch("steps")
+    test_steps = steps.select { |step| step.fetch("name", "").start_with?("go test") || step["name"] == "Darwin CGO-disabled tests" }
+
+    assert_equal [
+      { "name" => "Darwin CGO-disabled tests", "if" => "runner.os == 'macOS'", "env" => { "CGO_ENABLED" => 0 }, "run" => "go test ./..." },
+      { "name" => "go test", "if" => "runner.os != 'Windows'", "run" => "go test -race ./..." },
+      { "name" => "go test (Windows)", "if" => "runner.os == 'Windows'", "run" => "go test -count=1 ./..." },
+    ], test_steps
+  end
+
+  def test_darwin_and_linux_only_checks_keep_platform_conditions
+    steps = GO_WORKFLOW_CONFIG.fetch("jobs").fetch("test").fetch("steps")
+    expected_conditions = {
+      "Vulnerability scan" => "runner.os == 'Linux'",
+      "Darwin credential backend build modes" => "runner.os == 'macOS'",
+      "Darwin CGO-disabled tests" => "runner.os == 'macOS'",
+      "goreleaser check and portable policy" => "runner.os == 'Linux'",
+      "actionlint" => "runner.os == 'Linux'",
+    }
+
+    expected_conditions.each do |name, condition|
       step = steps.find { |candidate| candidate["name"] == name }
       refute_nil step
-      assert_equal "bash", step.fetch("shell")
+      assert_equal condition, step.fetch("if")
     end
   end
 
@@ -108,7 +125,7 @@ class VerifyPortableReleasePolicyTest < Minitest::Test
 
     assert_equal "windows-latest", job.fetch("runs-on")
     refute_nil mutation_test
-    assert_equal "go test -count=1 -run '^TestWindowsSkillMutationFailsClosed$' ./internal/skills", mutation_test.fetch("run")
+    assert_equal "go test -race -run '^TestWindowsSkillMutationFailsClosed$' ./internal/skills", mutation_test.fetch("run")
     refute_nil credential_build
     assert_equal "go build ./cmd/confluence-cli", credential_build.fetch("run")
   end

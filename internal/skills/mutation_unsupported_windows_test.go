@@ -5,6 +5,7 @@ package skills
 import (
 	"context"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/abigotado/confluence-cli/internal/errx"
@@ -24,6 +25,13 @@ func TestWindowsSkillMutationFailsClosed(t *testing.T) {
 			var typed *errx.Error
 			if !errors.As(err, &typed) || typed.Reason != "SKILL_MUTATION_UNSUPPORTED" || errx.ExitCode(err) != errx.CodeUsage {
 				t.Fatalf("error=%v", err)
+			}
+			entries, readErr := os.ReadDir(options.Dest)
+			if readErr != nil {
+				t.Fatalf("ReadDir() error = %v", readErr)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("%s mutated destination before failing closed: %v", operation.name, entries)
 			}
 		})
 	}

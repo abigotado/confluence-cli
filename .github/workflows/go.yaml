@@ -18,6 +18,9 @@ permissions:
 jobs:
   test:
     name: Build and test (${{ matrix.os }})
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -34,7 +37,6 @@ jobs:
           cache: true
 
       - name: gofmt
-        shell: bash
         run: |
           UNFORMATTED=$(gofmt -l .)
           if [ -n "$UNFORMATTED" ]; then
@@ -173,7 +175,6 @@ jobs:
       # The generated contract is what agents read. If regenerating changes it,
       # the committed copy no longer matches internal/errx.
       - name: Generated contract is current
-        shell: bash
         run: |
           go generate ./...
           DIRTY=$(git status --porcelain)
@@ -198,7 +199,7 @@ jobs:
           cache: true
 
       - name: Skill mutation fails closed
-        run: go test -count=1 -run '^TestWindowsSkillMutationFailsClosed$' ./internal/skills
+        run: go test -race -run '^TestWindowsSkillMutationFailsClosed$' ./internal/skills
 
       - name: Build unsupported credential backend
         run: go build ./cmd/confluence-cli
